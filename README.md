@@ -70,40 +70,48 @@ When triggered with parameter `N`, it runs this sequence:
 3. **READY? prompt.** A prompt tells you to move the mouse over the Blender VSE
    timeline (required — those shortcuts only work when the mouse is over the
    timeline), then **press Return to start** or **Escape to cancel**.
-4. **Repeat the delete cycle `N` times.** A **Repeat** action whose count is the
-   expression `%TriggerValue%` runs the fixed clip-deletion keystroke sequence
+4. **Capture the count.** A **Set Variable to Text** action stores the passed
+   parameter (`%TriggerValue%`) into the variable `BlenderDeleteCount`.
+5. **Repeat the delete cycle `N` times.** A **Repeat** action whose count is the
+   calculation `BlenderDeleteCount` runs the fixed clip-deletion keystroke sequence
    (with 1-second pauses) `N` times. The count is driven entirely by the argument
    passed from `trigger.sh` / `osascript` — there is no hard-coded count.
 
+   > The Repeat count must be the **bare variable name** `BlenderDeleteCount` (no
+   > `%` signs) — that field is a calculation, not text. Putting `%TriggerValue%`
+   > or `%BlenderDeleteCount%` there shows "invalid." The editor may briefly show
+   > "invalid" until the variable has a value; that's just a preview and it works
+   > at run time (the Set Variable action runs first).
+
 ## Testing it safely (the TEST macro)
 
-`Delete clips Blender (TEST)` runs the exact same flow — gate, bring-to-front,
-READY? prompt — but **replaces the delete keystrokes with a big confirmation
-message** instead of actually deleting anything. Use it to confirm the flow works
-end to end (including that the count is passed through correctly) before running
-the real thing:
+`Delete clips Blender (TEST)` runs the same front-half flow — gate, bring-to-front,
+READY? prompt — but **replaces the delete keystrokes with a confirmation dialog**
+instead of actually deleting anything. Use it to confirm the flow works end to end
+(including that the count is passed through correctly) before running the real
+thing:
 
 ```bash
 ./scripts/trigger.sh --test 5
 ```
 
-If it works, after you press Return you'll see a large **"✅ TEST PASSED"** window
-that echoes the count it received (`5`). No clips are touched.
+After you press Return (Start) at the READY? prompt, you'll get a **"✅ TEST
+PASSED"** dialog that echoes the count it received (`5`), with an OK button. No
+clips are touched.
 
-## Notes / things to verify on import
+## Notes
 
-These macros were hand-authored as `.kmmacros` XML and validated as property
-lists, but **were not run in a live Keyboard Maestro engine**. After importing,
-glance over the macros in the editor and confirm:
-
-- The **Blender group** is "available in all applications."
-- The **If** action's condition reads "Blender is not running" (Application
-  condition). If it looks blank, re-pick Blender.
-- The **Activate** action targets Blender, and the **Prompt for User Input** has a
-  default "Start" button (Return) and cancels on Escape.
+- These files are **exported from a working Keyboard Maestro setup** (with one
+  action — the TEST macro's "✅ TEST PASSED" confirmation — appended afterward), so
+  they should import cleanly. The TEST macro's gate cancels silently if Blender
+  isn't open (its "Blender isn't open" message did not survive an earlier import);
+  add a message there in the editor if you want one.
 - A bare hotkey is intentionally *not* set: the count comes from the passed
   parameter, so the macros are triggered by name (via `trigger.sh`, `osascript`,
   or an *Execute a Macro* action), not a keypress.
+- The **Blender group** is available in all applications (required so the macro can
+  bring Blender to the front from anywhere).
 
-After any edit in Keyboard Maestro, re-export the macro over the matching file in
-`macros/` to keep this repo in sync.
+After any edit in Keyboard Maestro, **re-export the macro over the matching file in
+`macros/`** to keep this repo in sync — that round-trip is the source of truth, not
+hand-edited XML.
