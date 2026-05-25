@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# trigger.sh — fire the "Delete clips blender copy" Keyboard Maestro macro,
+# trigger.sh — fire the "Delete clips Blender" Keyboard Maestro macro,
 # passing a numeric argument through as the macro parameter.
 #
 # Usage: ./trigger.sh <number>
@@ -15,4 +15,4 @@ fi
 
 number="$1"
 
-osascript -e "tell application \"Keyboard Maestro Engine\" to do script \"Delete clips blender copy\" with parameter \"${number}\""
+osascript -e "tell application \"Keyboard Maestro Engine\" to do script \"Delete clips Blender\" with parameter \"${number}\""
