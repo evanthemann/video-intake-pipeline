@@ -44,21 +44,35 @@ The same trigger without the wrapper script — substitute your number for `5`:
 osascript -e 'tell application "Keyboard Maestro Engine" to do script "Delete clips blender copy" with parameter "5"'
 ```
 
-The macro reads the passed value via the `%TriggerValue%` token.
+A macro reads a passed parameter via the `%TriggerValue%` token. **Note:** as
+currently exported, the wrapper macro does *not* reference `%TriggerValue%` — see
+the caveat under "Two-macro architecture" below.
 
 ## Two-macro architecture
 
-This workflow is split into two cooperating macros:
+This workflow is split into two cooperating macros, both in the **Blender group**
+(scoped to run only when Blender is the front app):
 
-- **Single cycle macro** — does one unit of work: it deletes a single clip (one
-  pass of the delete cycle in Blender). It is intentionally small and
-  parameter-driven so it can be invoked repeatedly.
-- **Wrapper macro** ("Delete clips blender copy") — the entry point that
-  `trigger.sh` / `osascript` calls. It takes the numeric parameter and drives the
-  single cycle macro that many times (e.g. loop N times, calling the single
-  cycle macro on each iteration).
+- **`Delete clips blender`** (the single cycle macro) — does one unit of work: a
+  fixed sequence of simulated keystrokes with 1-second pauses between them that
+  performs one clip-deletion cycle in Blender. Bound to its own hotkey.
+- **`Delete clips blender copy`** (the wrapper macro) — the entry point that
+  `trigger.sh` / `osascript` calls. It's a **Repeat** action that runs `Execute
+  Macro → Delete clips blender` with a 1-second pause between iterations. Also
+  bound to its own hotkey.
 
-Keeping the per-clip logic isolated in the single cycle macro means the deletion
+Keeping the per-clip logic isolated in `Delete clips blender` means the deletion
 behavior is defined in exactly one place, while the wrapper only handles how many
-times to run it. This makes the cycle easy to test on its own and lets the
-wrapper stay a thin, count-driven loop.
+times to run it.
+
+### Caveat: the wrapper currently ignores the passed parameter
+
+In the exported macro, the wrapper's Repeat count is the hard-coded literal `9`,
+and its Execute Macro action has **Use Parameter** turned off. So passing a number
+via `trigger.sh 5` (or the `osascript ... with parameter` call) has **no effect** —
+the wrapper always runs exactly 9 cycles.
+
+To make the argument actually control the cycle count, edit the wrapper macro in
+Keyboard Maestro: set the **Repeat** action's count field to `%TriggerValue%`
+(instead of `9`). Then re-export the macro over
+`macros/Delete clips blender copy.kmmacros` to keep this repo in sync.
