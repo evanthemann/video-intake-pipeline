@@ -44,6 +44,9 @@ cycle.
 
 - Requires a number argument (after the optional `-t`/`--test` flag).
 - Exits with an error and a usage message if the number is missing.
+- **If Blender isn't running, it does not trigger the macro** — it prints a
+  message to stderr, posts a macOS notification, and exits `1`. (The KM gate is
+  still a backstop for other trigger paths.)
 - The script is executable; if needed, restore the bit with
   `chmod +x scripts/trigger.sh`.
 
