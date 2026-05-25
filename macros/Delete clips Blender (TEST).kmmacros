@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+	<dict>
+		<key>Activate</key>
+		<string>Normal</string>
+		<key>CreationDate</key>
+		<real>749384744.50458395</real>
+		<key>IsActive</key>
+		<true/>
+		<key>Macros</key>
+		<array>
+			<dict>
+				<key>Actions</key>
+				<array>
+					<dict>
+						<key>Conditions</key>
+						<dict>
+							<key>ConditionList</key>
+							<array>
+								<dict>
+									<key>Application</key>
+									<dict>
+										<key>BundleIdentifier</key>
+										<string>org.blenderfoundation.blender</string>
+										<key>Name</key>
+										<string>Blender</string>
+										<key>NewFile</key>
+										<string>/Applications/Blender.app</string>
+									</dict>
+									<key>ApplicationConditionType</key>
+									<string>NotRunning</string>
+									<key>ConditionType</key>
+									<string>Application</string>
+								</dict>
+							</array>
+							<key>ConditionListMatch</key>
+							<string>All</string>
+						</dict>
+						<key>ElseActions</key>
+						<array/>
+						<key>MacroActionType</key>
+						<string>IfThenElse</string>
+						<key>ThenActions</key>
+						<array>
+							<dict>
+								<key>DisplayKind</key>
+								<string>Window</string>
+								<key>MacroActionType</key>
+								<string>DisplayText</string>
+								<key>Text</key>
+								<string>Blender isn't open. Open Blender, then run again.</string>
+								<key>Title</key>
+								<string>Delete clips Blender (TEST)</string>
+							</dict>
+							<dict>
+								<key>CancelType</key>
+								<string>CancelThisMacro</string>
+								<key>MacroActionType</key>
+								<string>Cancel</string>
+							</dict>
+						</array>
+						<key>TimeOutAbortsMacro</key>
+						<true/>
+					</dict>
+					<dict>
+						<key>AllWindows</key>
+						<false/>
+						<key>AlreadyActivatedActionType</key>
+						<string>Normal</string>
+						<key>Application</key>
+						<dict>
+							<key>BundleIdentifier</key>
+							<string>org.blenderfoundation.blender</string>
+							<key>Name</key>
+							<string>Blender</string>
+							<key>NewFile</key>
+							<string>/Applications/Blender.app</string>
+						</dict>
+						<key>MacroActionType</key>
+						<string>ActivateApplication</string>
+						<key>ReopenInitialWindow</key>
+						<false/>
+						<key>Target</key>
+						<string>Specific</string>
+						<key>TimeOutAbortsMacro</key>
+						<true/>
+					</dict>
+					<dict>
+						<key>IsActive</key>
+						<true/>
+						<key>IsDisclosed</key>
+						<false/>
+						<key>MacroActionType</key>
+						<string>Pause</string>
+						<key>Time</key>
+						<string>0.3</string>
+						<key>TimeOutAbortsMacro</key>
+						<true/>
+					</dict>
+					<dict>
+						<key>Buttons</key>
+						<array>
+							<string>Start</string>
+						</array>
+						<key>MacroActionType</key>
+						<string>PromptForUserInput</string>
+						<key>Prompt</key>
+						<string>READY? (TEST RUN — no clips will be deleted) Move the mouse over the Blender VSE timeline, then press Return to start. Press Escape to cancel.</string>
+						<key>Title</key>
+						<string>READY? (TEST)</string>
+						<key>Variables</key>
+						<array/>
+					</dict>
+					<dict>
+						<key>IsActive</key>
+						<true/>
+						<key>IsDisclosed</key>
+						<false/>
+						<key>MacroActionType</key>
+						<string>Pause</string>
+						<key>Time</key>
+						<string>0.2</string>
+						<key>TimeOutAbortsMacro</key>
+						<true/>
+					</dict>
+					<dict>
+						<key>DisplayKind</key>
+						<string>Window</string>
+						<key>MacroActionType</key>
+						<string>DisplayText</string>
+						<key>Text</key>
+						<string>✅ TEST PASSED
+
+The flow works: gate → Blender to front → READY prompt → run step.
+
+Count received from the shell: %TriggerValue%
+(The real macro would repeat the delete cycle that many times.)
+
+No clips were deleted — this is the TEST macro.</string>
+						<key>Title</key>
+						<string>Delete clips Blender (TEST)</string>
+					</dict>
+				</array>
+				<key>CreationDate</key>
+				<real>749384744.50458395</real>
+				<key>IsActive</key>
+				<true/>
+				<key>ModificationDate</key>
+				<real>749384744.50458395</real>
+				<key>Name</key>
+				<string>Delete clips Blender (TEST)</string>
+				<key>Triggers</key>
+				<array/>
+				<key>UID</key>
+				<string>742F42E9-98E5-41DC-91A8-2D5483CC0AF3</string>
+			</dict>
+		</array>
+		<key>Name</key>
+		<string>Blender group</string>
+		<key>ToggleMacroUID</key>
+		<string>397B0792-781A-4D7A-863B-FFDB5B74B9BD</string>
+		<key>UID</key>
+		<string>940B5AB4-28EC-4433-A856-E02FC6C7A20D</string>
+	</dict>
+</array>
+</plist>
