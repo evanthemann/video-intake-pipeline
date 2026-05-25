@@ -1,13 +1,13 @@
 # Video Intake & Blender VSE Pipeline
 
-Automates the journey from raw iPhone and GoPro footage to an edit-ready Blender VSE project. Run the four scripts in order, then do your manual editing in Blender, then use the two marker scripts to prep for and clean up after the Keyboard Maestro cutting macro.
+Automates the journey from raw multi-camera footage (iPhone, GoPro, Canon Vixia / 7D, iVue Rincon, stills) to an edit-ready Blender VSE project. Run the four scripts in order, then do your manual editing in Blender, then use the two marker scripts to prep for and clean up after the Keyboard Maestro cutting macro.
 
 ---
 
 ## Pipeline Overview
 
 ```
-Raw footage (iPhone · GoPro · stills)
+Raw footage (iPhone · GoPro · Canon · iVue · stills)
         │
         ▼
 1. ingest.py          — scan folder, extract metadata, write manifest
@@ -62,9 +62,21 @@ Scans a footage folder recursively, extracts metadata via ffprobe / exiftool, an
 
 **What it detects per file:** source (GoPro / iPhone / unknown), media type, orientation, dimensions, duration, FPS, HDR, VFR, creation timestamp.
 
+**Timezone normalization.** iPhone and GoPro write `creation_time` in true UTC. Other
+cameras — Canon Vixia, Canon 7D, iVue Rincon — write naive *local* wall-clock time but
+still label it `Z`, so left alone they sort hours away from the Apple/GoPro clips. Ingest
+detects clips with no UTC proof, reads the real local offset from an iPhone/GoPro clip in
+the same batch (e.g. `-0400`), and rewrites the naive clips to true UTC so every clip
+shares one clock. If there is no Apple/GoPro clip in the batch it falls back to this
+machine's timezone (and warns) — use `--local-offset` to set it explicitly. Any per-camera
+embedded timezone tag is deliberately ignored, since it is often misconfigured (the Vixia
+reports `-05:00` even when shooting in `-04:00`). Displayed times in the reports are local
+wall-clock.
+
 ```bash
 python3 ingest.py /path/to/footage
 python3 ingest.py /path/to/footage --output /path/to/output_dir
+python3 ingest.py /path/to/footage --local-offset -04:00   # footage shot in a zone with no Apple/GoPro clip
 python3 ingest.py          # prompted — supports drag-and-drop
 ```
 
@@ -73,6 +85,7 @@ python3 ingest.py          # prompted — supports drag-and-drop
 | Flag | Description |
 |---|---|
 | `--output`, `-o` | Custom output directory (default: `<input_dir>/_ingest`) |
+| `--local-offset` | UTC offset of the footage's local time, e.g. `-04:00`. Overrides offset detection for naive-local cameras (Canon, iVue). Default: read from an iPhone/GoPro clip, else this machine's timezone. |
 
 ---
 

@@ -28,6 +28,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 from datetime import datetime, timezone, timedelta
 
 # ---------------------------------------------------------------------------
@@ -136,6 +137,70 @@ def parse_creation_time(tags: dict) -> str | None:
         return dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
     except ValueError:
         return None
+
+
+def parse_naive_creation_dt(tags: dict) -> datetime | None:
+    """Parse the raw ffprobe creation_time tag into a *naive* datetime (no tz)."""
+    raw = tags.get("creation_time", "")
+    if not raw:
+        return None
+    raw = raw.rstrip("Z").split(".")[0]
+    try:
+        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+
+
+def clip_records_utc(tags: dict) -> bool:
+    """
+    Return True only if the file carries positive proof its creation_time is true UTC.
+
+    iPhones write an Apple make plus com.apple.quicktime.creationdate (local time +
+    explicit offset); GoPros stamp a 'GoPro …' handler/encoder. Both store
+    creation_time in real UTC. Cameras like the Canon Vixia / 7D and iVue Rincon
+    write naive local wall-clock time but still label it 'Z' — they leave no UTC
+    proof, so we treat them as naive-local and correct them with a batch offset.
+    Note we deliberately ignore any embedded per-camera timezone tag (e.g. the
+    Vixia's [Canon] TimeZone): it is often misconfigured and would re-break order.
+    """
+    make = (
+        tags.get("com.apple.quicktime.make", "")
+        or tags.get("make", "")
+    ).lower()
+    if "apple" in make or tags.get("com.apple.quicktime.creationdate"):
+        return True
+    encoder = tags.get("encoder", "").lower()
+    handler = tags.get("handler_name", "").lower()
+    if "gopro" in encoder or "gopro" in handler:
+        return True
+    return False
+
+
+def parse_apple_offset_minutes(tags: dict) -> int | None:
+    """
+    Extract the local UTC offset (minutes) from an Apple
+    com.apple.quicktime.creationdate tag, e.g. '2026-05-25T14:36:59-0400' → -240.
+    Returns None if the tag is absent or carries no offset.
+    """
+    raw = tags.get("com.apple.quicktime.creationdate", "")
+    m = re.search(r"([+-])(\d{2}):?(\d{2})$", raw)
+    if not m:
+        return None
+    sign = 1 if m.group(1) == "+" else -1
+    return sign * (int(m.group(2)) * 60 + int(m.group(3)))
+
+
+def machine_utc_offset_minutes() -> int:
+    """This machine's current local UTC offset, in minutes (respects current DST)."""
+    off = datetime.now(timezone.utc).astimezone().utcoffset()
+    return int(off.total_seconds() // 60) if off else 0
+
+
+def fmt_offset(minutes: int) -> str:
+    """Render an offset in minutes as 'UTC-04:00'."""
+    sign = "+" if minutes >= 0 else "-"
+    minutes = abs(minutes)
+    return f"UTC{sign}{minutes // 60:02d}:{minutes % 60:02d}"
 
 
 def parse_fps(stream: dict) -> float | None:
@@ -372,10 +437,28 @@ def inspect_file(path: str) -> dict:
     is_hdr = detect_hdr(video_stream) if is_video else False
     is_vfr = detect_vfr(video_stream) if is_video else False
 
-    # Creation time
-    creation_time = parse_creation_time(tags)
-    if not creation_time and is_image:
-        creation_time = image_creation_time_via_exiftool(path)
+    # Creation time.
+    # iPhone/GoPro write true UTC; images carry their own EXIF offset (exiftool
+    # resolves it to UTC). Cameras that leave no UTC proof (Canon Vixia / 7D,
+    # iVue Rincon) write naive local time mislabeled 'Z' — they are flagged here
+    # and corrected to true UTC in scan_directory once the batch offset is known.
+    records_utc = True
+    naive_local_iso = None
+    apple_offset_min = None
+
+    if is_video:
+        records_utc = clip_records_utc(tags)
+        apple_offset_min = parse_apple_offset_minutes(tags)
+        if records_utc:
+            creation_time = parse_creation_time(tags)
+        else:
+            creation_time = None  # filled in by the batch-offset pass
+            naive_dt = parse_naive_creation_dt(tags)
+            naive_local_iso = naive_dt.isoformat() if naive_dt else None
+    else:
+        creation_time = parse_creation_time(tags)
+        if not creation_time and is_image:
+            creation_time = image_creation_time_via_exiftool(path)
 
     return {
         "path": os.path.abspath(path),
@@ -390,7 +473,11 @@ def inspect_file(path: str) -> dict:
         "is_hdr": is_hdr,
         "is_vfr": is_vfr,
         "creation_time": creation_time,
+        "creation_time_local": None,   # wall-clock display value, set in scan_directory
         "size_bytes": size_bytes,
+        "_records_utc": records_utc,
+        "_naive_local_iso": naive_local_iso,
+        "_apple_offset_min": apple_offset_min,
     }
 
 
@@ -398,18 +485,31 @@ def inspect_file(path: str) -> dict:
 # Directory scan
 # ---------------------------------------------------------------------------
 
-def scan_directory(input_dir: str) -> list[dict]:
+def scan_directory(input_dir: str, local_offset_min: int | None = None,
+                   output_dir: str | None = None) -> tuple[list[dict], dict]:
     """
     Recursively scan input_dir for media files.
-    Returns a list of manifest entry dicts, sorted by creation_time
-    (files with no creation_time sort to the end, then by filename).
+
+    Returns (entries, tz_summary):
+      entries     — manifest entry dicts, sorted by creation_time (true UTC);
+                    files with no creation_time sort to the end, then by filename.
+      tz_summary  — details of the timezone normalization, for the ingest report.
+
+    local_offset_min, if given (from --local-offset), overrides offset detection.
+    output_dir, if given, is pruned from the walk so re-runs don't re-ingest our
+    own transcoded copies (which live in <output_dir>/transcoded).
     """
     all_extensions = VIDEO_EXTENSIONS | IMAGE_EXTENSIONS
     found_paths = []
+    output_abs = os.path.abspath(output_dir) if output_dir else None
 
     for root, dirs, files in os.walk(input_dir):
-        # Skip hidden dirs and bl_proxy folders
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d != "bl_proxy"]
+        # Skip hidden dirs, bl_proxy folders, and our own output directory.
+        dirs[:] = [
+            d for d in dirs
+            if not d.startswith(".") and d != "bl_proxy"
+            and not (output_abs and os.path.abspath(os.path.join(root, d)) == output_abs)
+        ]
         for fname in files:
             if fname.startswith("."):
                 continue
@@ -425,13 +525,70 @@ def scan_directory(input_dir: str) -> list[dict]:
         print(f"  [{i}/{total}] Inspecting {os.path.basename(path)} …")
         entries.append(inspect_file(path))
 
-    # Sort: files with creation_time first (chronological), then no-time files by filename
+    # ── Timezone normalization ────────────────────────────────────────────────
+    # Some cameras (Canon Vixia / 7D, iVue Rincon) record naive local wall-clock
+    # time but label it UTC, so their clips sort hours away from iPhone/GoPro
+    # clips that record true UTC. Pick ONE batch-wide local offset and rewrite
+    # the naive clips to true UTC so every clip shares one clock.
+    apple_offsets = [e["_apple_offset_min"] for e in entries if e["_apple_offset_min"] is not None]
+    needs_fix = [e for e in entries if not e["_records_utc"] and e["_naive_local_iso"]]
+
+    fallback_used = False
+    if local_offset_min is not None:
+        batch_offset = local_offset_min
+        offset_source = f"--local-offset flag ({fmt_offset(batch_offset)})"
+    elif apple_offsets:
+        batch_offset = Counter(apple_offsets).most_common(1)[0][0]
+        offset_source = f"iPhone/GoPro clip in this batch ({fmt_offset(batch_offset)})"
+    else:
+        batch_offset = machine_utc_offset_minutes()
+        offset_source = f"this machine's local timezone ({fmt_offset(batch_offset)})"
+        fallback_used = bool(needs_fix)
+
+    if needs_fix:
+        print(f"\n  Normalizing {len(needs_fix)} naive-local clip(s) to UTC "
+              f"— offset from {offset_source}.")
+        if fallback_used:
+            print("  [warn] No iPhone/GoPro clip in this batch to read the true offset from.")
+            print("         Falling back to this machine's current timezone. If the footage")
+            print("         was shot in a different zone, re-run with --local-offset ±HH:MM.")
+
+    fix_tz = timezone(timedelta(minutes=batch_offset))
+    for e in needs_fix:
+        naive = datetime.fromisoformat(e["_naive_local_iso"])
+        utc = naive.replace(tzinfo=fix_tz).astimezone(timezone.utc)
+        e["creation_time"] = utc.isoformat().replace("+00:00", "Z")
+
+    # Local (wall-clock) display value for every timed clip, using the batch offset.
+    for e in entries:
+        if e["creation_time"]:
+            utc = datetime.fromisoformat(e["creation_time"].rstrip("Z")).replace(tzinfo=timezone.utc)
+            e["creation_time_local"] = utc.astimezone(fix_tz).isoformat()
+        else:
+            e["creation_time_local"] = None
+
+    corrected_files = [e["filename"] for e in needs_fix]
+
+    # Drop internal helper keys before the entries get serialized to the manifest.
+    for e in entries:
+        for k in ("_records_utc", "_naive_local_iso", "_apple_offset_min"):
+            e.pop(k, None)
+
+    # Sort: timed clips chronologically (by true UTC), untimed by filename at the end.
     def sort_key(e):
         ct = e["creation_time"] or ""
         return (0 if ct else 1, ct, e["filename"])
 
     entries.sort(key=sort_key)
-    return entries
+
+    tz_summary = {
+        "batch_offset_min": batch_offset,
+        "offset_label": fmt_offset(batch_offset),
+        "offset_source": offset_source,
+        "corrected_files": corrected_files,
+        "fallback_used": fallback_used,
+    }
+    return entries, tz_summary
 
 
 # ---------------------------------------------------------------------------
@@ -464,15 +621,23 @@ def fmt_duration(duration_s: float | None) -> str:
 def fmt_datetime(iso: str | None) -> str:
     if not iso:
         return "NO TIMESTAMP     "
-    # "2025-08-14T09:32:11Z" → "2025-08-14 09:32:11"
-    return iso.replace("T", " ").rstrip("Z")
+    # Accept UTC ("…T09:32:11Z") or local ("…T14:47:50-04:00") and render the
+    # wall clock only: "2026-05-25 14:47:50"
+    date_part, _, time_part = iso.partition("T")
+    time_part = re.sub(r"(Z|[+-]\d{2}:?\d{2})$", "", time_part.split(".")[0])
+    return f"{date_part} {time_part}"
+
+
+def disp_time(entry: dict) -> str:
+    """Human-readable wall-clock time for an entry (prefers the local value)."""
+    return fmt_datetime(entry.get("creation_time_local") or entry.get("creation_time"))
 
 
 def write_clips_ordered(entries: list[dict], output_dir: str) -> str:
     lines = []
     header = (
         f"{'#':<4}  "
-        f"{'DATE/TIME':<20}  "
+        f"{'DATE/TIME (local)':<20}  "
         f"{'SOURCE':<7}  "
         f"{'TYPE':<6}  "
         f"{'ORIENT':<10}  "
@@ -487,7 +652,7 @@ def write_clips_ordered(entries: list[dict], output_dir: str) -> str:
     for i, e in enumerate(entries, 1):
         line = (
             f"{i:<4}  "
-            f"{fmt_datetime(e['creation_time']):<20}  "
+            f"{disp_time(e):<20}  "
             f"{e['source']:<7}  "
             f"{e['media_type']:<6}  "
             f"{e['orientation']:<10}  "
@@ -534,8 +699,8 @@ def find_timeline_gaps(entries: list[dict], threshold_s: int = GAP_THRESHOLD_S) 
             gap_s = (t1 - t0).total_seconds() - dur
             if gap_s > threshold_s:
                 gaps.append({
-                    "from": prev["creation_time"],
-                    "to": curr["creation_time"],
+                    "from": prev.get("creation_time_local") or prev["creation_time"],
+                    "to": curr.get("creation_time_local") or curr["creation_time"],
                     "gap_s": gap_s,
                     "from_file": prev["filename"],
                     "to_file": curr["filename"],
@@ -545,8 +710,10 @@ def find_timeline_gaps(entries: list[dict], threshold_s: int = GAP_THRESHOLD_S) 
     return gaps
 
 
-def write_ingest_report(entries: list[dict], input_dir: str, output_dir: str) -> str:
+def write_ingest_report(entries: list[dict], input_dir: str, output_dir: str,
+                        tz_summary: dict | None = None) -> str:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    tz_summary = tz_summary or {}
 
     # --- Counts ---
     videos = [e for e in entries if e["media_type"] == "video"]
@@ -567,15 +734,11 @@ def write_ingest_report(entries: list[dict], input_dir: str, output_dir: str) ->
     vertical_clips = [e for e in videos if e["orientation"] == "vertical"]
     no_timestamp = [e for e in entries if not e["creation_time"]]
 
-    # --- Date range ---
+    # --- Date range (wall-clock / local) ---
     timed = [e for e in entries if e["creation_time"]]
     date_range = "unknown"
     if timed:
-        first = timed[0]["creation_time"]
-        last = timed[-1]["creation_time"]
-        def fmt_dt(iso):
-            return iso.replace("T", " ").rstrip("Z")
-        date_range = f"{fmt_dt(first)}  →  {fmt_dt(last)}"
+        date_range = f"{disp_time(timed[0])}  →  {disp_time(timed[-1])}"
 
     # --- Gaps ---
     gaps = find_timeline_gaps(entries)
@@ -590,7 +753,9 @@ def write_ingest_report(entries: list[dict], input_dir: str, output_dir: str) ->
     a(f"**Input folder:** `{os.path.abspath(input_dir)}`  ")
     a(f"**Total files:** {len(entries)}  ")
     a(f"**Total video duration:** {seconds_to_hms(total_dur_s)}  ")
-    a(f"**Date range:** {date_range}  ")
+    a(f"**Date range:** {date_range}  _(local wall-clock times)_  ")
+    if tz_summary.get("offset_label"):
+        a(f"**Local offset:** {tz_summary['offset_label']} — from {tz_summary.get('offset_source', 'unknown')}  ")
     a(f"")
     a(f"---")
     a(f"")
@@ -614,6 +779,18 @@ def write_ingest_report(entries: list[dict], input_dir: str, output_dir: str) ->
     a(f"")
 
     flags_found = False
+
+    corrected = tz_summary.get("corrected_files") or []
+    if corrected:
+        flags_found = True
+        a(f"- **{len(corrected)} clip(s) had naive local timestamps normalized to UTC** "
+          f"→ offset {tz_summary.get('offset_label', '?')} applied "
+          f"(from {tz_summary.get('offset_source', 'unknown')})")
+        for fn in corrected:
+            a(f"  - `{fn}`")
+        if tz_summary.get("fallback_used"):
+            a(f"  - ⚠️  No iPhone/GoPro clip was present to confirm the offset — "
+              f"used this machine's timezone. Re-run with `--local-offset ±HH:MM` if wrong.")
 
     if hdr_clips:
         flags_found = True
@@ -664,12 +841,12 @@ def write_ingest_report(entries: list[dict], input_dir: str, output_dir: str) ->
     a(f"")
     a(f"## All files in chronological order")
     a(f"")
-    a(f"| # | Date/Time | Source | Type | Orient | Duration | Filename |")
+    a(f"| # | Date/Time (local) | Source | Type | Orient | Duration | Filename |")
     a(f"|---|---|---|---|---|---|---|")
     for i, e in enumerate(entries, 1):
         a(
             f"| {i} "
-            f"| {fmt_datetime(e['creation_time'])} "
+            f"| {disp_time(e)} "
             f"| {e['source']} "
             f"| {e['media_type']} "
             f"| {e['orientation']} "
@@ -713,6 +890,17 @@ def sanitize_path(raw: str) -> str:
     return p.strip()
 
 
+def parse_offset_arg(raw: str) -> int:
+    """Parse a --local-offset value like '-04:00', '+0530', or '-4' into minutes."""
+    m = re.fullmatch(r"\s*([+-])(\d{1,2})(?::?(\d{2}))?\s*", raw)
+    if not m:
+        raise argparse.ArgumentTypeError(
+            f"invalid offset '{raw}' — expected form like -04:00, +0530, or -4"
+        )
+    sign = 1 if m.group(1) == "+" else -1
+    return sign * (int(m.group(2)) * 60 + int(m.group(3) or 0))
+
+
 def prompt_for_dir() -> str:
     """Interactively ask the user for a directory path, supporting drag-and-drop."""
     print()
@@ -737,6 +925,16 @@ def main():
         "--output", "-o",
         default=None,
         help="Directory to write output files (default: <input_dir>/_ingest)",
+    )
+    parser.add_argument(
+        "--local-offset",
+        type=parse_offset_arg,
+        default=None,
+        metavar="±HH:MM",
+        help="UTC offset of the footage's local time, e.g. -04:00. Used to normalize "
+             "cameras that record naive local time with no timezone (Canon Vixia / 7D, "
+             "iVue Rincon). Default: read the offset from an iPhone/GoPro clip in the "
+             "batch, else fall back to this machine's timezone.",
     )
     args = parser.parse_args()
 
@@ -764,7 +962,9 @@ def main():
 
     # Scan
     print("Scanning files …")
-    entries = scan_directory(input_dir)
+    entries, tz_summary = scan_directory(
+        input_dir, local_offset_min=args.local_offset, output_dir=output_dir
+    )
     print(f"\nFound {len(entries)} media file(s).\n")
 
     if not entries:
@@ -779,7 +979,7 @@ def main():
     p2 = write_clips_ordered(entries, output_dir)
     print(f"  ✓  {os.path.basename(p2)}")
 
-    p3 = write_ingest_report(entries, input_dir, output_dir)
+    p3 = write_ingest_report(entries, input_dir, output_dir, tz_summary)
     print(f"  ✓  {os.path.basename(p3)}")
 
     print(f"\nDone. All outputs in: {output_dir}\n")

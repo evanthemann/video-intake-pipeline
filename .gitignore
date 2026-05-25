@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Footage / pipeline working files — never commit media or generated output
+2026-05-25 multi camera test/
+_ingest/
+*.blend
+*.blend1
+blender_import.log
