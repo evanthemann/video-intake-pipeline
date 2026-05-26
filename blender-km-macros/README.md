@@ -6,16 +6,22 @@ so the "Delete clips Blender" macro can be triggered from anywhere (terminal,
 scripts, other apps), running the clip-deletion cycle a number of times you pass
 in.
 
-## Repository layout
+This folder is **part of the [video-intake-pipeline](../README.md) repository** — it
+provides **step 4.5** of that pipeline: the clip-cutting macro you run after
+`vse-validate-markers.py` and before `vse-remove-markers.py`. See the
+[top-level README](../README.md) for the full footage → edit workflow.
+
+## Layout within the repo
 
 ```
-blender-km-macros/
-├── README.md
-├── macros/
-│   ├── Delete clips Blender.kmmacros          # the real macro
-│   └── Delete clips Blender (TEST).kmmacros   # dry-run version (no deletions)
-└── scripts/
-    └── trigger.sh                             # CLI wrapper around the osascript trigger
+video-intake-pipeline/              ← repo root (ingest.py, transcode.py, …)
+└── blender-km-macros/
+    ├── README.md
+    ├── macros/
+    │   ├── Delete clips Blender.kmmacros          # the real macro
+    │   └── Delete clips Blender (TEST).kmmacros   # dry-run version (no deletions)
+    └── scripts/
+        └── trigger.sh                             # CLI wrapper around the osascript trigger
 ```
 
 ## Importing the macros
@@ -41,6 +47,10 @@ cycle.
 ./scripts/trigger.sh --test 5    # run the TEST macro (no deletions), see below
 ./scripts/trigger.sh -t 5        # same as --test
 ```
+
+> Paths above are relative to this `blender-km-macros/` folder. From the repo root,
+> prefix with the folder name — e.g. `./blender-km-macros/scripts/trigger.sh 5` —
+> which is the form the [top-level README](../README.md) uses for step 4.5.
 
 - Requires a number argument (after the optional `-t`/`--test` flag).
 - Exits with an error and a usage message if the number is missing.
@@ -116,5 +126,7 @@ clips are touched.
   bring Blender to the front from anywhere).
 
 After any edit in Keyboard Maestro, **re-export the macro over the matching file in
-`macros/`** to keep this repo in sync — that round-trip is the source of truth, not
-hand-edited XML.
+`macros/`** to keep the macros in sync — that round-trip is the source of truth, not
+hand-edited XML. Commit the re-exported `.kmmacros` in the combined
+[video-intake-pipeline](../README.md) repo; this folder no longer has its own git
+history — it was merged in via `git subtree`.
