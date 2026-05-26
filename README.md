@@ -25,7 +25,7 @@ Raw footage (iPhone · GoPro · Canon · iVue · stills)
 4. vse-validate-markers.py   — validate marker pairs, save _cut.blend, print KM loop count
         │
         ▼
-   [ run Keyboard Maestro macro ]
+   [ run Keyboard Maestro cutting macro — blender-km-macros/scripts/trigger.sh N ]
         │
         ▼
 5. vse-remove-markers.py     — wipe all timeline markers, save in place
@@ -45,6 +45,7 @@ Raw footage (iPhone · GoPro · Canon · iVue · stills)
 | ImageMagick `convert` + `identify` | image padding, dimension reads | `brew install imagemagick` |
 | `exiftool` | EXIF orientation + timestamps on images | `brew install exiftool` |
 | `blender` | headless VSE import + marker scripts | [blender.org](https://blender.org) or `brew install --cask blender` |
+| Keyboard Maestro | run the clip-cutting macro (step 4.5) — macOS only | [keyboardmaestro.com](https://www.keyboardmaestro.com/) · setup in [`blender-km-macros/`](blender-km-macros/README.md) |
 
 Linux Mint: replace `avconvert` with ffmpeg zscale tone-map (handled automatically). `exiftool` via `sudo apt install libimage-exiftool-perl`.
 
@@ -167,6 +168,26 @@ python3 vse-validate-markers.py          # prompted — supports drag-and-drop
 
 ---
 
+### 4.5 — Keyboard Maestro cutting macro (`blender-km-macros/`)
+
+Between validating markers and removing them, run the Keyboard Maestro macro that
+performs the actual cuts in Blender. It lives in
+[`blender-km-macros/`](blender-km-macros/README.md), which has the full setup guide —
+importing the `.kmmacros` files into Keyboard Maestro and the safety / TEST flow.
+
+Once the macros are imported, trigger the cutting macro with the loop count that
+step 4 printed:
+
+```bash
+./blender-km-macros/scripts/trigger.sh <N>          # N = KM loop count from step 4
+./blender-km-macros/scripts/trigger.sh --test <N>   # dry run — deletes nothing
+```
+
+`trigger.sh` won't fire if Blender isn't running. See the subfolder README for the
+macro internals and import notes.
+
+---
+
 ### 5 — `vse-remove-markers.py`
 
 Opens a `.blend` file in Blender headlessly, removes every timeline marker, and saves in place. Run this after the Keyboard Maestro macro has finished cutting.
@@ -213,7 +234,8 @@ python3 import-vse.py ~/footage/trip --name trip_edit
 # 4. Validate markers
 python3 vse-validate-markers.py ~/footage/trip/trip_edit.blend
 
-# --- Run Keyboard Maestro macro (N loops as printed above) ---
+# 4.5 Run the Keyboard Maestro cutting macro (N = loop count printed by step 4)
+./blender-km-macros/scripts/trigger.sh <N>
 
 # 5. Clean up markers
 python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
