@@ -327,6 +327,133 @@ def avconvert_hdr_to_sdr(src: str, m4v_out: str, avconvert_bin: str,
     return True
 
 
+def find_audio_offset(video_path: str, audio_path: str) -> tuple[float, float]:
+    """
+    Run audio-offset-finder to locate video_path's audio within audio_path.
+    Returns (time_offset_seconds, standard_score).
+    """
+    result = subprocess.run(
+        ["audio-offset-finder", "--find-offset-of", video_path,
+         "--within", audio_path, "--json"],
+        capture_output=True, text=True, timeout=300,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "audio-offset-finder exited non-zero")
+    data = json.loads(result.stdout)
+    return float(data["time_offset"]), float(data["standard_score"])
+
+
+def transcode_with_external_audio(entry: dict, dst: str, ffmpeg_bin: str,
+                                   avconvert_bin: str, ffprobe_bin: str,
+                                   target_fps: float = 29.97,
+                                   dry_run: bool = False,
+                                   loudnorm: bool = True) -> bool:
+    """
+    Replace a clip's audio with a synced external audio file.
+
+    Uses audio-offset-finder to compute the sync offset, then runs ffmpeg with
+    -map 0:v -map 1:a to keep the video track and swap in the external audio.
+    Applies the same HDR/VFR/vertical transforms as transcode_video.
+
+    Offset logic (mirrors merge.sh):
+      offset < 0 → video started first → seek into video by abs(offset)
+      offset >= 0 → audio started first → seek into audio by offset
+    """
+    src        = entry["path"]
+    audio_path = entry["external_audio"]
+    is_hdr     = entry.get("is_hdr", False)
+    is_vfr     = entry.get("is_vfr", False)
+    is_iphone  = entry.get("source") == "iphone"
+    use_avconvert = is_hdr and is_iphone
+    force_cfr  = is_iphone or is_vfr
+
+    rotation   = get_rotation(src, ffprobe_bin)
+    is_vertical = rotation in (90, 270)
+    if not is_vertical:
+        is_vertical = entry.get("orientation") == "vertical"
+
+    say(f"  video+audio  {os.path.basename(src)}")
+    say(f"               audio: {os.path.basename(audio_path)}")
+
+    if dry_run:
+        skip(f"    [dry-run] would find offset then ffmpeg with external audio")
+        return True
+
+    # Find sync offset
+    say(f"    analysing audio offset…")
+    try:
+        offset, score = find_audio_offset(src, audio_path)
+    except Exception as e:
+        warn(f"    audio-offset-finder failed: {e}")
+        return False
+
+    say(f"    offset: {offset}s  (score: {score:.1f})")
+    if score < 10:
+        warn(f"    low confidence sync (score {score:.1f}) — result may be inaccurate")
+
+    # Step 1: avconvert for iPhone HDR
+    ffmpeg_src = src
+    m4v_tmp    = None
+    if use_avconvert:
+        m4v_tmp = dst.replace(".mp4", "_sdr_tmp.m4v")
+        if not avconvert_hdr_to_sdr(src, m4v_tmp, avconvert_bin):
+            return False
+        ffmpeg_src = m4v_tmp
+        is_hdr = False
+
+    vf_str            = build_ffmpeg_filter(is_hdr, is_vertical)
+    use_filter_complex = is_vertical
+    needs_video_work  = is_hdr or force_cfr or is_vertical
+
+    LOUDNORM_FILTER = "loudnorm=I=-16:LRA=11:TP=-1.5"
+    audio_args = ["-c:a", "aac", "-b:a", "192k"]
+    if loudnorm:
+        audio_args += ["-af", LOUDNORM_FILTER]
+
+    # Build inputs — seek into whichever file started later
+    if offset < 0:
+        cmd = [ffmpeg_bin, "-y", "-ss", str(abs(offset)), "-i", ffmpeg_src, "-i", audio_path]
+    else:
+        cmd = [ffmpeg_bin, "-y", "-i", ffmpeg_src, "-ss", str(offset), "-i", audio_path]
+
+    # Map: video from input 0, audio from input 1
+    if use_filter_complex:
+        cmd += ["-filter_complex", vf_str, "-map", "[out]", "-map", "1:a"]
+    else:
+        cmd += ["-map", "0:v", "-map", "1:a"]
+        if vf_str:
+            cmd += ["-vf", vf_str]
+
+    if needs_video_work:
+        cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "fast", "-pix_fmt", "yuv420p"]
+        if force_cfr:
+            cmd += ["-r", "30000/1001", "-fps_mode", "cfr"]
+    else:
+        cmd += ["-c:v", "copy"]
+
+    cmd += audio_args
+    cmd.append(dst)
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=3600)
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace")
+            warn(f"  ffmpeg failed for {os.path.basename(ffmpeg_src)}:\n{stderr[-800:]}")
+            return False
+    except subprocess.TimeoutExpired:
+        warn(f"  ffmpeg timed out for {os.path.basename(ffmpeg_src)}")
+        return False
+    finally:
+        if m4v_tmp and os.path.isfile(m4v_tmp):
+            try:
+                os.remove(m4v_tmp)
+            except OSError:
+                pass
+
+    ok(f"  {os.path.basename(dst)}")
+    return True
+
+
 def transcode_video(entry: dict, dst: str, ffmpeg_bin: str, avconvert_bin: str,
                     ffprobe_bin: str, target_fps: float = 29.97,
                     dry_run: bool = False, loudnorm: bool = True) -> bool:
@@ -599,6 +726,8 @@ def main():
     ffprobe_bin    = find_tool("ffprobe",    ["/opt/homebrew/bin/ffprobe", "/usr/bin/ffprobe"])
     convert_bin    = find_tool("convert",    ["/opt/homebrew/bin/convert", "/usr/bin/convert"])
     avconvert_bin  = find_tool("avconvert",  ["/usr/bin/avconvert"])
+    if any(e.get("external_audio") for e in entries):
+        find_tool("audio-offset-finder")
 
     # ── Summary ──────────────────────────────────────────────────────────────
     images        = [e for e in entries if e["media_type"] == "image"]
@@ -607,8 +736,10 @@ def main():
     hdr_other     = [e for e in videos  if e.get("is_hdr") and e.get("source") != "iphone"]
     iphone_v      = [e for e in videos  if e.get("source") == "iphone"]
     vert_v        = [e for e in videos  if e.get("orientation") == "vertical"]
+    ext_audio_v   = [e for e in videos  if e.get("external_audio")]
     passthru      = [e for e in videos  if not e.get("is_hdr") and e.get("source") != "iphone"
-                                           and e.get("orientation") != "vertical"]
+                                           and e.get("orientation") != "vertical"
+                                           and not e.get("external_audio")]
 
     print(f"\n{'='*60}")
     print(f"  TRANSCODE — Video Intake Pipeline")
@@ -622,6 +753,8 @@ def main():
     print(f"             {len(hdr_other)} other HDR video(s) → SDR via ffmpeg")
     print(f"             {len(iphone_v)} iPhone video(s) → forced CFR 29.97")
     print(f"             {len(vert_v)} vertical video(s) → 16:9 letterbox (manifest; re-checked per clip)")
+    if ext_audio_v:
+        print(f"             {len(ext_audio_v)} clip(s) → audio replaced from external file")
     print(f"             {len(passthru)} GoPro/other video(s) passing through unchanged")
     if args.dry_run:
         print(f"  Mode     : DRY RUN — no files will be written")
@@ -681,7 +814,10 @@ def main():
                 results.append(output_entry(entry, dst, ffprobe_bin))
                 continue
 
-            success = transcode_video(entry, dst, ffmpeg_bin, avconvert_bin, ffprobe_bin, args.fps, args.dry_run, not args.no_loudnorm)
+            if entry.get("external_audio"):
+                success = transcode_with_external_audio(entry, dst, ffmpeg_bin, avconvert_bin, ffprobe_bin, args.fps, args.dry_run, not args.no_loudnorm)
+            else:
+                success = transcode_video(entry, dst, ffmpeg_bin, avconvert_bin, ffprobe_bin, args.fps, args.dry_run, not args.no_loudnorm)
             if success and not args.dry_run:
                 succeeded += 1
                 results.append(output_entry(entry, dst, ffprobe_bin))

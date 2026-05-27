@@ -864,6 +864,48 @@ def write_ingest_report(entries: list[dict], input_dir: str, output_dir: str,
 # Main
 # ---------------------------------------------------------------------------
 
+def prompt_for_audio_pairs(entries: list[dict]) -> dict[str, str]:
+    """
+    Show video clips to the user and ask if any have a separate external audio
+    file to sync. Returns {abs_video_path: abs_audio_path}.
+    """
+    videos = [e for e in entries if e["media_type"] == "video"]
+    if not videos:
+        return {}
+
+    print("  Video clips found:")
+    for i, e in enumerate(videos, 1):
+        print(f"    {i:>3}.  {e['filename']}")
+    print()
+
+    ans = input("Any of these clips have a separate external audio file? [y/N]: ").strip().lower()
+    if ans != "y":
+        return {}
+
+    pairs: dict[str, str] = {}
+    while True:
+        raw_vid = input("\n  Video clip (drag or paste path): ").strip()
+        if not raw_vid:
+            break
+        vid_path = os.path.abspath(sanitize_path(raw_vid))
+        if not os.path.isfile(vid_path):
+            print(f"  [warn] Not found: {vid_path} — skipping")
+        else:
+            raw_aud = input("  External audio file (drag or paste path): ").strip()
+            aud_path = os.path.abspath(sanitize_path(raw_aud))
+            if not os.path.isfile(aud_path):
+                print(f"  [warn] Not found: {aud_path} — skipping this pair")
+            else:
+                pairs[vid_path] = aud_path
+                print(f"  Paired: {os.path.basename(vid_path)}  ←audio—  {os.path.basename(aud_path)}")
+
+        again = input("  Another pair? [y/N]: ").strip().lower()
+        if again != "y":
+            break
+
+    return pairs
+
+
 def sanitize_path(raw: str) -> str:
     """
     Clean up a path that may have been drag-and-dropped or copy-pasted
@@ -970,6 +1012,15 @@ def main():
     if not entries:
         print("Nothing to do — no media files found.")
         sys.exit(0)
+
+    # Optional: pair video clips with external audio files.
+    # The pairing is recorded in the manifest; transcode.py does the actual sync.
+    audio_pairs = prompt_for_audio_pairs(entries)
+    if audio_pairs:
+        for entry in entries:
+            if entry["path"] in audio_pairs:
+                entry["external_audio"] = audio_pairs[entry["path"]]
+        print()
 
     # Write outputs
     print("Writing outputs …")

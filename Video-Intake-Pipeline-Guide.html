@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Video Intake &amp; Blender VSE Pipeline — A Reader's Guide</title>
+<style>
+  /* ── Base ─────────────────────────────────────────────────────────── */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 17pt;
+    line-height: 1.7;
+    color: #1a1a1a;
+    background: #fff;
+    max-width: 560px;
+    margin: 0 auto;
+    padding: 0 32px;
+  }
+
+  /* ── Typography ──────────────────────────────────────────────────── */
+  h1 { font-size: 34pt; font-weight: 700; line-height: 1.2; margin-bottom: 0.4em; }
+  h2 { font-size: 25pt; font-weight: 700; border-bottom: 2px solid #1a1a1a; padding-bottom: 6px; margin: 2em 0 0.8em; }
+  h3 { font-size: 20pt; font-weight: 700; color: #1a4a8a; margin: 1.6em 0 0.5em; }
+  h4 { font-size: 17pt; font-weight: 700; margin: 1.2em 0 0.4em; }
+
+  p  { margin-bottom: 0.9em; text-align: justify; }
+  li { margin-bottom: 0.4em; }
+  ul, ol { margin: 0.6em 0 0.9em 1.6em; }
+
+  strong { font-weight: 700; }
+  em     { font-style: italic; }
+
+  a { color: #1a4a8a; text-decoration: none; }
+
+  /* ── Code ────────────────────────────────────────────────────────── */
+  code {
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 13pt;
+    background: #f0f0f0;
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+
+  pre {
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 12.5pt;
+    background: #f5f5f5;
+    border: 1px solid #ddd;
+    border-left: 3px solid #1a4a8a;
+    padding: 12px 14px;
+    margin: 0.8em 0 1.2em;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+    page-break-inside: avoid;
+  }
+
+  pre code { background: none; padding: 0; font-size: inherit; border-radius: 0; }
+
+  /* ── Tables ──────────────────────────────────────────────────────── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.8em 0 1.2em;
+    font-size: 15pt;
+    page-break-inside: avoid;
+  }
+  th {
+    background: #1a4a8a;
+    color: #fff;
+    padding: 6px 10px;
+    text-align: left;
+    font-weight: 700;
+  }
+  td { padding: 6px 10px; border-bottom: 1px solid #ddd; vertical-align: top; }
+  tr:nth-child(even) td { background: #f8f8f8; }
+
+  /* ── Callout / blockquote ────────────────────────────────────────── */
+  blockquote {
+    border: 1px solid #ccd;
+    border-left: 4px solid #1a4a8a;
+    background: #f4f6fb;
+    padding: 10px 14px;
+    margin: 0.8em 0 1.2em;
+    font-size: 16pt;
+    page-break-inside: avoid;
+  }
+  blockquote p { margin-bottom: 0.4em; text-align: left; }
+  blockquote p:last-child { margin-bottom: 0; }
+
+  hr { border: none; border-top: 1px solid #ccc; margin: 2em 0; }
+
+  /* ── Title page ──────────────────────────────────────────────────── */
+  .title-page {
+    min-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    page-break-after: always;
+  }
+  .label {
+    font-family: Arial, sans-serif;
+    font-size: 12pt;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: #1a4a8a;
+    margin-bottom: 1.2em;
+  }
+  .title-page h1 { font-size: 42pt; margin-bottom: 0.6em; }
+  .subtitle {
+    font-size: 18pt;
+    color: #444;
+    margin-bottom: 2.5em;
+    line-height: 1.5;
+  }
+  .footer-note {
+    font-size: 13pt;
+    color: #888;
+    font-style: italic;
+  }
+
+  /* ── TOC ─────────────────────────────────────────────────────────── */
+  .toc { page-break-after: always; padding-top: 2em; }
+  .toc h2 { border-bottom-color: #1a1a1a; }
+  .toc ul { list-style: none; margin: 1em 0; padding: 0; }
+  .toc ul li {
+    padding: 8px 0;
+    border-bottom: 1px dotted #bbb;
+    font-size: 17pt;
+  }
+
+  /* ── Parts ───────────────────────────────────────────────────────── */
+  .part { page-break-before: always; padding-top: 2em; }
+
+  /* ── Print ───────────────────────────────────────────────────────── */
+  @page {
+    size: A4;
+    margin: 22mm 22mm 24mm;
+  }
+  @media print {
+    body { max-width: 100%; padding: 0; font-size: 17pt; }
+    .title-page { page-break-after: always; }
+    .toc        { page-break-after: always; }
+    .part       { page-break-before: always; }
+    h2, h3      { page-break-after: avoid; }
+    pre, table, blockquote { page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════ TITLE PAGE -->
+<div class="title-page">
+  <div class="label">A Reader's Guide</div>
+  <h1>Video Intake<br>&amp; Blender VSE<br>Pipeline</h1>
+  <p class="subtitle">From a folder of mismatched footage<br>to an edit-ready Blender project.</p>
+  <p class="footer-note">Generated from the repository README and source · for evening reading</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ TOC -->
+<div class="toc">
+  <h2>Contents</h2>
+  <ul>
+    <li>Part I &middot; The Project README (verbatim)</li>
+    <li>Part II &middot; What It Is &amp; Why It Exists</li>
+    <li>Part III &middot; How It Is Structured</li>
+    <li>Part IV &middot; How Each Stage Works</li>
+    <li>Part V &middot; How It Was Made: Design Decisions</li>
+    <li>Part VI &middot; How to Use It: Full Walkthrough</li>
+    <li>Part VII &middot; Glossary</li>
+    <li>Appendix A &middot; The blender-km-macros README (verbatim)</li>
+  </ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ PART I -->
+<div class="part">
+<h2>Part I - The Project README (verbatim)</h2>
+<p><em>Reproduced exactly as it appears in the repository.</em></p>
+
+<h3>Video Intake &amp; Blender VSE Pipeline</h3>
+<p>Automates the journey from raw multi-camera footage (iPhone, GoPro, Canon Vixia / 7D, iVue Rincon, stills) to an edit-ready Blender VSE project. Run the four scripts in order, then do your manual editing in Blender, then use the two marker scripts to prep for and clean up after the Keyboard Maestro cutting macro.</p>
+
+<h4>Pipeline Overview</h4>
+<pre>
+Raw footage (iPhone · GoPro · Canon · iVue · stills)
+        │
+        ▼
+1. ingest.py     — scan folder, extract metadata; optionally pair clips
+                   with external audio files; write manifest
+        │
+        ▼
+2. transcode.py  — normalize all media to SDR · CFR 29.97 · 16:9 MP4;
+                   sync + replace audio for clips paired in step 1
+        │
+        ▼
+3. import-vse.py — create Blender project, import clips in
+                   chronological order
+        │
+        ▼
+   [ manual editing in Blender — place F / u markers ]
+        │
+        ▼
+4. vse-validate-markers.py  — validate marker pairs, save _cut.blend,
+                               print KM loop count
+        │
+        ▼
+   [ run Keyboard Maestro cutting macro —
+     blender-km-macros/scripts/trigger.sh N ]
+        │
+        ▼
+5. vse-remove-markers.py    — wipe all timeline markers, save in place
+        │
+        ▼
+   Edit-ready Blender project
+</pre>
+
+<h4>Dependencies</h4>
+<table>
+  <tr><th>Tool</th><th>Purpose</th><th>Install</th></tr>
+  <tr><td><code>ffmpeg</code> + <code>ffprobe</code></td><td>transcode, probe metadata</td><td><code>brew install ffmpeg</code></td></tr>
+  <tr><td><code>avconvert</code></td><td>iPhone HDR → SDR (macOS only)</td><td>built-in at <code>/usr/bin/avconvert</code></td></tr>
+  <tr><td>ImageMagick <code>convert</code> + <code>identify</code></td><td>image padding, dimension reads</td><td><code>brew install imagemagick</code></td></tr>
+  <tr><td><code>exiftool</code></td><td>EXIF orientation + timestamps on images</td><td><code>brew install exiftool</code></td></tr>
+  <tr><td><code>blender</code></td><td>headless VSE import + marker scripts</td><td>blender.org or <code>brew install --cask blender</code></td></tr>
+  <tr><td>Keyboard Maestro</td><td>run the clip-cutting macro (step 4.5) — macOS only</td><td>keyboardmaestro.com · setup in <code>blender-km-macros/</code></td></tr>
+  <tr><td><code>audio-offset-finder</code></td><td>sync external audio to video (optional — only needed if you use external audio files)</td><td><code>pip install audio-offset-finder</code></td></tr>
+</table>
+<p>Linux Mint: replace <code>avconvert</code> with ffmpeg zscale tone-map (handled automatically). <code>exiftool</code> via <code>sudo apt install libimage-exiftool-perl</code>.</p>
+
+<h4>Scripts</h4>
+
+<h3>1 — <code>ingest.py</code></h3>
+<p>Scans a footage folder recursively, extracts metadata via ffprobe / exiftool, and writes three output files to <code>&lt;input_dir&gt;/_ingest/</code>:</p>
+<ul>
+  <li><code>manifest.json</code> — machine-readable, consumed by transcode.py</li>
+  <li><code>clips_ordered.txt</code> — human-readable chronological list</li>
+  <li><code>ingest_report.md</code> — counts, flags (HDR / VFR / vertical / missing timestamps), timeline gaps</li>
+</ul>
+<p><strong>What it detects per file:</strong> source (GoPro / iPhone / unknown), media type, orientation, dimensions, duration, FPS, HDR, VFR, creation timestamp.</p>
+
+<p><strong>External audio pairing.</strong> After scanning, ingest.py asks whether any video clips have a separate, higher-quality audio file (iPhone Voice Memo, dedicated recorder, etc.). If yes, you drag-and-drop each video clip and its matching audio file. The pairing is written to <code>manifest.json</code> as an <code>external_audio</code> field — no heavy processing happens at ingest time. The actual sync and audio replacement runs in transcode.py (step 2) using <code>audio-offset-finder</code> to align the tracks automatically.</p>
+
+<p><strong>Timezone normalization.</strong> iPhone and GoPro write <code>creation_time</code> in true UTC. Other cameras — Canon Vixia, Canon 7D, iVue Rincon — write naive <em>local</em> wall-clock time but still label it <code>Z</code>, so left alone they sort hours away from the Apple/GoPro clips. Ingest detects clips with no UTC proof, reads the real local offset from an iPhone/GoPro clip in the same batch (e.g. <code>-0400</code>), and rewrites the naive clips to true UTC so every clip shares one clock. If there is no Apple/GoPro clip in the batch it falls back to this machine's timezone (and warns) — use <code>--local-offset</code> to set it explicitly. Any per-camera embedded timezone tag is deliberately ignored, since it is often misconfigured (the Vixia reports <code>-05:00</code> even when shooting in <code>-04:00</code>). Displayed times in the reports are local wall-clock.</p>
+
+<pre>
+python3 ingest.py /path/to/footage
+python3 ingest.py /path/to/footage --output /path/to/output_dir
+python3 ingest.py /path/to/footage --local-offset -04:00   # footage shot in a zone with no Apple/GoPro clip
+python3 ingest.py          # prompted — supports drag-and-drop
+</pre>
+
+<p><strong>Flags / options:</strong></p>
+<table>
+  <tr><th>Flag</th><th>Description</th></tr>
+  <tr><td><code>--output</code>, <code>-o</code></td><td>Custom output directory (default: <code>&lt;input_dir&gt;/_ingest</code>)</td></tr>
+  <tr><td><code>--local-offset</code></td><td>UTC offset of the footage's local time, e.g. <code>-04:00</code>. Overrides offset detection for naive-local cameras (Canon, iVue). Default: read from an iPhone/GoPro clip, else this machine's timezone.</td></tr>
+</table>
+
+<h3>2 — <code>transcode.py</code></h3>
+<p>Reads <code>_ingest/manifest.json</code> and normalizes every file. All output lands in <code>_ingest/transcoded/</code>. Already-transcoded files are skipped, so re-runs are safe.</p>
+
+<p><strong>What it does per file type:</strong></p>
+<table>
+  <tr><th>Input</th><th>Transform</th></tr>
+  <tr><td>Still image</td><td>6-second slow-zoom MP4: 1s static lead-in + 5s Ken Burns zoom (libx264 · 29.97 fps · 1920×1080)</td></tr>
+  <tr><td>iPhone HDR video</td><td><code>avconvert PresetAppleM4V1080pHD</code> → SDR .m4v, then ffmpeg for VFR/vertical/remux</td></tr>
+  <tr><td>Other HDR video</td><td>ffmpeg zscale tone-map → SDR</td></tr>
+  <tr><td>VFR video</td><td>ffmpeg <code>-fps_mode cfr</code> → CFR 29.97</td></tr>
+  <tr><td>Vertical video</td><td>ffmpeg blurred 16:9 letterbox (portrait centred on blurred+darkened background)</td></tr>
+  <tr><td>GoPro / clean video</td><td>stream-copy (fast, no re-encode)</td></tr>
+</table>
+<p>Audio is normalized to <strong>-16 LUFS / -1.5 dBTP</strong> via <code>loudnorm</code> on all re-encoded clips.</p>
+
+<p><strong>External audio replacement.</strong> Clips that have an <code>external_audio</code> entry in the manifest (set during ingest) are processed with <code>audio-offset-finder</code> to compute the sync offset, then ffmpeg replaces the native audio track with the external file. All standard transforms (HDR→SDR, VFR→CFR, vertical letterbox) still apply alongside the audio swap.</p>
+
+<p>On completion writes <code>_ingest/transcoded/manifest_transcoded.json</code> — the input for import-vse.py.</p>
+
+<pre>
+python3 transcode.py /path/to/project_folder
+python3 transcode.py /path/to/project_folder --dry-run
+python3 transcode.py          # prompted — supports drag-and-drop
+</pre>
+
+<p><strong>Flags / options:</strong></p>
+<table>
+  <tr><th>Flag</th><th>Description</th></tr>
+  <tr><td><code>--output</code>, <code>-o</code></td><td>Custom output directory</td></tr>
+  <tr><td><code>--fps</code></td><td>Target CFR frame rate (default: <code>29.97</code>)</td></tr>
+  <tr><td><code>--dry-run</code></td><td>Print what would run, write nothing</td></tr>
+  <tr><td><code>--no-loudnorm</code></td><td>Skip audio loudness normalization</td></tr>
+</table>
+
+<h3>3 — <code>import-vse.py</code></h3>
+<p>Reads <code>manifest_transcoded.json</code>, prompts for project name and resolution, then launches Blender headlessly to create a <code>.blend</code> file with all clips placed on the VSE timeline in chronological order. Applies the Video Editing workspace layout and writes <code>blender_import.log</code>.</p>
+<pre>
+python3 import-vse.py /path/to/project_folder
+python3 import-vse.py /path/to/project_folder --name my_project
+python3 import-vse.py          # prompted — supports drag-and-drop
+</pre>
+<p><strong>Flags / options:</strong></p>
+<table>
+  <tr><th>Flag</th><th>Description</th></tr>
+  <tr><td><code>--name</code>, <code>-n</code></td><td>Project and <code>.blend</code> filename</td></tr>
+  <tr><td><code>--blender</code></td><td>Path to Blender executable (auto-detected if omitted)</td></tr>
+  <tr><td><code>--dry-run</code></td><td>Show import order and Blender command without running</td></tr>
+</table>
+<p><strong>Prompted interactively:</strong> project name, resolution (1080p or 4K), confirmation of clip order.</p>
+
+<h3>4 — <code>vse-validate-markers.py</code></h3>
+<p>Opens a <code>.blend</code> file in Blender headlessly, reads all timeline markers, and validates them as F / u pairs before you run the Keyboard Maestro cutting macro.</p>
+<p><strong>Marker convention:</strong> markers must come in pairs — the start of a keep-range is named <code>F1</code>, <code>F2</code>, etc.; the matching end is named exactly <code>u</code>. Each pair defines one segment to retain.</p>
+<p><strong>What it checks:</strong></p>
+<ul>
+  <li>Even number of markers (every start has an end)</li>
+  <li>Alternating F… / u naming</li>
+  <li>No overlapping ranges</li>
+</ul>
+<p>On success: saves a <code>_cut.blend</code> copy of your project and prints the number of KM macro loops needed.</p>
+<pre>
+python3 vse-validate-markers.py /path/to/project.blend
+python3 vse-validate-markers.py          # prompted — supports drag-and-drop
+</pre>
+
+<h3>4.5 — Keyboard Maestro cutting macro (<code>blender-km-macros/</code>)</h3>
+<p>Between validating markers and removing them, run the Keyboard Maestro macro that performs the actual cuts in Blender. It lives in <code>blender-km-macros/</code>, which has the full setup guide — importing the <code>.kmmacros</code> files into Keyboard Maestro and the safety / TEST flow.</p>
+<p>Once the macros are imported, trigger the cutting macro with the loop count that step 4 printed:</p>
+<pre>
+./blender-km-macros/scripts/trigger.sh &lt;N&gt;          # N = KM loop count from step 4
+./blender-km-macros/scripts/trigger.sh --test &lt;N&gt;   # dry run — deletes nothing
+</pre>
+<p><code>trigger.sh</code> won't fire if Blender isn't running. See the subfolder README for the macro internals and import notes.</p>
+
+<h3>5 — <code>vse-remove-markers.py</code></h3>
+<p>Opens a <code>.blend</code> file in Blender headlessly, removes every timeline marker, and saves in place. Run this after the Keyboard Maestro macro has finished cutting.</p>
+<pre>
+python3 vse-remove-markers.py /path/to/project.blend
+python3 vse-remove-markers.py          # prompted — supports drag-and-drop
+</pre>
+
+<h4>Folder Structure (after full run)</h4>
+<pre>
+project_folder/
+├── _ingest/
+│   ├── manifest.json               ← ingest output
+│   ├── clips_ordered.txt
+│   ├── ingest_report.md
+│   └── transcoded/
+│       ├── manifest_transcoded.json  ← transcode output
+│       └── *.mp4                     ← normalized clips
+├── my_project.blend                ← VSE project
+├── my_project_cut.blend            ← copy with cuts applied (post-KM)
+└── blender_import.log
+</pre>
+
+<h4>Typical Full Run</h4>
+<pre>
+# 1. Ingest (answer the audio-pairing prompt if you have Voice Memos)
+python3 ingest.py ~/footage/trip
+
+# 2. Transcode (can take a while — grab a coffee)
+#    Clips paired with external audio get synced + audio-swapped here
+python3 transcode.py ~/footage/trip
+
+# 3. Import into Blender
+python3 import-vse.py ~/footage/trip --name trip_edit
+
+# --- Open trip_edit.blend, do manual editing, place F/u markers ---
+
+# 4. Validate markers
+python3 vse-validate-markers.py ~/footage/trip/trip_edit.blend
+
+# 4.5 Run the Keyboard Maestro cutting macro (N = loop count printed by step 4)
+./blender-km-macros/scripts/trigger.sh &lt;N&gt;
+
+# 5. Clean up markers
+python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
+</pre>
+
+<h4>Platform Notes</h4>
+<ul>
+  <li><strong>macOS</strong> is the primary target. <code>avconvert</code> (iPhone HDR→SDR) is macOS-only; on Linux, the pipeline falls back to ffmpeg's zscale tone-map automatically.</li>
+  <li>All scripts support <strong>drag-and-drop</strong> path input when run without arguments — useful in Terminal on macOS.</li>
+  <li>Blender is auto-detected at <code>/Applications/Blender.app</code> (macOS) and <code>/usr/bin/blender</code> (Linux). Pass <code>--blender /path/to/blender</code> to override.</li>
+</ul>
+
+<h4>Roadmap</h4>
+<ul>
+  <li><strong>Proxy generation</strong> — re-add <code>redo_proxies.py</code> as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender</li>
+  <li><strong>Subtitles</strong> — auto-generate or import SRT / VTT and burn or soft-attach to the Blender timeline</li>
+  <li><strong>After Effects export</strong> — convert the VSE timeline to an AE-compatible project file (via ExtendScript or <code>aescript</code> bridge) for finishing in After Effects</li>
+  <li><strong>External audio format validation</strong> — iPhone Voice Memos are sometimes encoded at a sample rate or bitrate that causes audio drift against 29.97 CFR video; add a pre-sync check that validates the audio file's sample rate and codec before <code>audio-offset-finder</code> runs and warns (or auto-converts) if the format is likely to cause slipping</li>
+  <li><strong>Ebook</strong> — keep this PDF/ebook (Kindle edition) updated as the pipeline evolves</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ PART II -->
+<div class="part">
+<h2>Part II - What It Is &amp; Why It Exists</h2>
+
+<p>You shoot an event on whatever is in your hands: an iPhone, a GoPro, an older Canon Vixia camcorder, a Canon 7D, a little iVue Rincon action cam, plus a handful of still photos. You end up with a folder full of clips that disagree with each other on almost everything that matters to an editor:</p>
+
+<ul>
+  <li><strong>They disagree on time.</strong> iPhone and GoPro stamp every clip in true UTC. The Canons and the iVue write <em>local wall-clock</em> time but mislabel it as <code>Z</code> (UTC). Sorted naively, the camcorder clips land hours away from the phone clips, so your timeline is shuffled out of real order.</li>
+  <li><strong>They disagree on color.</strong> iPhone video is HDR (high dynamic range). Dropped onto an SDR timeline next to GoPro footage it looks washed-out or wrong.</li>
+  <li><strong>They disagree on frame timing.</strong> Phones often record VFR (variable frame rate) to save space; an editor wants CFR (constant frame rate) or playback drifts and audio slips.</li>
+  <li><strong>They disagree on shape.</strong> A vertical phone clip on a 16:9 timeline leaves ugly black bars, or gets stretched.</li>
+  <li><strong>They disagree on being video at all.</strong> Stills are not clips; they have no duration and cannot sit on a video track as-is.</li>
+  <li><strong>They disagree on audio quality.</strong> A clip shot with a camera's built-in mic may have poor audio when a dedicated recorder or iPhone Voice Memo was running nearby — but those two recordings need to be synced and swapped into the video.</li>
+</ul>
+
+<p>The Video Intake Pipeline exists to erase every one of those disagreements <em>before</em> you start editing. You point it at the messy folder; it hands back a single Blender Video Sequence Editor (VSE) project where every clip is the same flavor — SDR, constant 29.97 fps, 16:9, normalized audio — laid end to end in <strong>true chronological order</strong>, ready to cut. The goal is simple: <em>spend your energy editing, not wrangling formats.</em></p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ PART III -->
+<div class="part">
+<h2>Part III - How It Is Structured</h2>
+
+<p>The pipeline is not one big program. It is <strong>five small command-line tools</strong> that hand work to each other through plain files on disk. Think of it as an assembly line where the conveyor belt is a JSON file.</p>
+
+<pre>
+ingest.py      -->  manifest.json
+transcode.py   -->  manifest_transcoded.json  (+ normalized .mp4 clips)
+import-vse.py  -->  project.blend
+               [ you edit in Blender, place F/u markers ]
+vse-validate-markers.py  -->  project_cut.blend  (+ a "loop count")
+               [ Keyboard Maestro macro does the cutting ]
+vse-remove-markers.py    -->  clean project_cut.blend
+</pre>
+
+<p>Everything a downstream tool needs is written by the upstream tool into the <code>_ingest/</code> folder. The manifest is the <strong>contract</strong> between stages: ingest describes every file (where it is, when it was shot, whether it is HDR/VFR/vertical, whether it has an external audio file to sync); transcode reads that description, normalizes the media, and rewrites the manifest with the new file paths and corrected flags; import reads the final manifest and never has to re-sort anything because the order is already baked in.</p>
+
+<h3>Patterns shared by every script</h3>
+
+<p>Once you have read one of these scripts, you have half-read the others. They share a small set of idioms on purpose:</p>
+
+<ul>
+  <li><strong>Drag-and-drop friendly.</strong> Run any script with no argument and it prompts you to drag a folder (or <code>.blend</code>) into the Terminal. A <code>sanitize_path()</code> helper strips the quotes and backslash-escapes that macOS adds when you drop a path.</li>
+  <li><strong>Tool auto-discovery.</strong> Each script hunts for <code>ffmpeg</code>, <code>blender</code>, and friends on your <code>PATH</code> first, then at well-known macOS/Linux locations, and only then gives up with an install hint. This is what makes the same code run on a Mac and on Linux Mint.</li>
+  <li><strong>Headless Blender by code generation.</strong> The three Blender scripts never open a window. They <em>write a small Python program into a temporary file</em>, launch <code>blender --background --python that_file.py</code>, and watch Blender's output for a sentinel line (<code>IMPORT_COMPLETE</code>, <code>VALIDATION_COMPLETE</code>, <code>REMOVE_COMPLETE</code>). Seeing the sentinel is how the wrapper knows the job truly finished, not just that Blender exited.</li>
+  <li><strong>Idempotent re-runs.</strong> Transcode skips any clip whose output already exists, so re-running after a crash resumes instead of redoing everything. Ingest prunes its own output folder from the scan so it never re-ingests its own transcoded copies.</li>
+  <li><strong>Colored, streaming output.</strong> Helpers like <code>ok()</code>, <code>warn()</code>, <code>skip()</code> print green / yellow / purple status as work happens, and Blender's own log lines are echoed live with a <code>blender |</code> prefix so a long import never looks frozen.</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ PART IV -->
+<div class="part">
+<h2>Part IV - How Each Stage Works</h2>
+
+<h3>Stage 1 -- ingest.py: build the map</h3>
+
+<p>Ingest walks the footage folder, inspects every video and image, and writes the manifest plus two human-readable reports. The interesting work is in how it figures things out without trusting any single piece of metadata.</p>
+
+<p><strong>Source detection.</strong> It guesses the camera with a cascade: GoPro filename prefixes (<code>GH</code>, <code>GP</code>, <code>GOPR</code>, <code>GL</code>), then ffprobe tags (an Apple <code>make</code> tag means iPhone; a GoPro encoder/handler means GoPro), then iPhone naming patterns (<code>IMG_1234</code>, screen recordings). Anything unrecognized is simply <code>unknown</code> — it still flows through, it just is not special-cased.</p>
+
+<p><strong>The timezone fix (the clever part).</strong> This is the pipeline's signature trick. A clip only counts as "really UTC" if it carries proof: an Apple <code>make</code> tag or Apple <code>creationdate</code>, or a GoPro signature. iPhone and GoPro pass; the Canon Vixia, Canon 7D, and iVue Rincon do not — they record local time mislabeled as UTC. Ingest:</p>
+<ol>
+  <li>Collects the true UTC offset from any iPhone/GoPro clip in the batch (it reads the offset baked into Apple's <code>creationdate</code>, e.g. <code>-0400</code>, and takes the most common one).</li>
+  <li>Rewrites every "naive-local" clip from that one batch offset into true UTC, so the whole shoot finally shares a single clock.</li>
+  <li>If there is no iPhone/GoPro clip to learn the offset from, it falls back to <em>this machine's</em> timezone and prints a warning telling you to re-run with <code>--local-offset</code> if the footage was shot elsewhere.</li>
+</ol>
+<p>Crucially it <strong>ignores any timezone tag the camera itself embedded</strong>, because those are routinely wrong (the Vixia happily reports <code>-05:00</code> while shooting in <code>-04:00</code>, which would re-break the order). Trust the phones; correct the rest.</p>
+
+<p><strong>External audio pairing.</strong> After the scan completes, ingest asks whether any video clips have a separate higher-quality audio file — an iPhone Voice Memo, a dedicated recorder, anything with better audio than the camera's built-in mic. If you say yes, it walks you through drag-and-dropping each video clip and its matching audio file one pair at a time. No processing happens at this point; the pairing is simply written into <code>manifest.json</code> as an <code>external_audio</code> field on the relevant clip entry. Transcode.py picks it up in step 2.</p>
+
+<p><strong>Other detectives.</strong> Rotation is read from the modern iPhone location — the Display Matrix in the stream's <code>side_data_list</code>, not the legacy <code>rotate</code> tag — and width/height are swapped when a clip is 90/270 degrees so orientation is logical, not pixel-literal. HDR is detected from the color transfer curve (<code>smpte2084</code> for PQ, <code>arib-std-b67</code> / <code>hlg</code> for HLG). VFR is inferred when a clip's average and "real" frame rates disagree by more than half a frame. Stills with no usable ffprobe data fall back to ImageMagick <code>identify</code> for size and <code>exiftool</code> for EXIF orientation and timestamp.</p>
+
+<p><strong>What you get.</strong> <code>manifest.json</code> (the machine contract), <code>clips_ordered.txt</code> (a quick chronological table), and <code>ingest_report.md</code> — a narrative with per-camera counts, total duration, flagged clips (HDR/VFR/vertical/no-timestamp), and any <strong>timeline gap longer than 10 minutes</strong>, which is a handy way to see where one scene ended and the next began.</p>
+
+<h3>Stage 2 -- transcode.py: make everything agree</h3>
+
+<p>Transcode reads the manifest and converts each file according to what it is. The whole point is that every output is the same: SDR, CFR 29.97, 16:9, libx264 MP4 with audio normalized to <strong>-16 LUFS / -1.5 dBTP</strong>.</p>
+
+<ul>
+  <li><strong>Stills become 6-second clips.</strong> A three-pass recipe: ImageMagick pads the photo onto a 4K black canvas; ffmpeg makes a 1-second static lead-in; ffmpeg makes a 5-second slow "Ken Burns" zoom (<code>zoompan</code>, easing from 1.0 to 1.1x); the two are concatenated. The result drops onto the timeline like any clip.</li>
+  <li><strong>iPhone HDR uses Apple's own converter.</strong> macOS <code>avconvert</code> with the <code>PresetAppleM4V1080pHD</code> preset does the HDR-to-SDR tone-map (Apple knows its own color science best), then ffmpeg handles any leftover VFR-to-CFR or vertical-to-16:9 work. iPhone clips are <em>always</em> forced to CFR 29.97.</li>
+  <li><strong>Non-Apple HDR uses an ffmpeg tone-map</strong> — a <code>zscale -&gt; tonemap=hable -&gt; zscale</code> chain that linearizes, maps highlights with the Hable curve, and lands back in bt709 SDR. (On Linux, where there is no <code>avconvert</code>, <em>all</em> HDR takes this path.)</li>
+  <li><strong>Vertical clips get a blurred 16:9 letterbox.</strong> The clip is split into two copies; one is scaled up to fill 1920x1080, heavily Gaussian-blurred (<code>gblur=sigma=120</code>) and darkened to make a soft background; the original portrait is centered on top. Far nicer than black bars.</li>
+  <li><strong>Clean GoPro / other clips are stream-copied</strong> — no re-encode, so they are fast and lossless to pass through.</li>
+  <li><strong>Clips with external audio get synced and swapped.</strong> When a manifest entry has an <code>external_audio</code> field (set during ingest), transcode runs <code>audio-offset-finder</code> to measure the time offset between the clip's native audio and the external file, then uses ffmpeg to replace the native audio track with the synced external recording. All other transforms (HDR, VFR, vertical) still apply. A confidence score is printed; a score below 10 triggers a warning that the sync may be inaccurate.</li>
+</ul>
+
+<p>Re-encoded video uses CRF 18 (visually lossless) at the <code>fast</code> preset. After each file, transcode re-probes the <em>output</em> to record its true dimensions and clear the HDR/VFR flags, then writes <code>manifest_transcoded.json</code>. Because it skips any output that already exists, the step is safe to re-run.</p>
+
+<h3>Stage 3 -- import-vse.py: build the Blender project</h3>
+
+<p>This stage turns the normalized clips into an actual <code>.blend</code>. It detects the frame rate from the first clip, asks you for a project name and resolution (1080p or 4K), shows you the import order for confirmation, then <strong>generates a Blender Python script</strong> and runs it headlessly.</p>
+
+<p>Inside Blender, the generated script sets the scene resolution and fps, finds or creates a Sequence Editor area, and adds each clip with <code>movie_strip_add</code> at the current playhead — then advances the playhead to that strip's end, so clips land back-to-back in order with no manual math. It selects all strips, loads Blender's built-in <strong>Video Editing</strong> workspace so the file opens with the right layout, saves the <code>.blend</code>, and prints <code>IMPORT_COMPLETE</code>. A <code>blender_import.log</code> records exactly what was placed and when.</p>
+
+<h3>Stage 4 -- vse-validate-markers.py: check your cut plan</h3>
+
+<p>After you edit in Blender, you mark the ranges to <strong>keep</strong> with timeline markers following one convention: the start of a keep-range is named <code>F1</code>, <code>F2</code>, … and its end is named exactly <code>u</code>. Each <code>F.. -&gt; u</code> pair is one segment to retain.</p>
+
+<p>Validation opens the file headlessly, sorts the markers by frame, and checks: the count is even (every start has an end), the names alternate <code>F..</code> then <code>u</code>, and no two keep-ranges overlap (a pairwise comparison). If anything is wrong it lists every problem and exits without touching your file. If everything is clean it saves a <code>_cut.blend</code> copy and prints the <strong>loop count</strong> for the Keyboard Maestro macro — which is <code>pairs - 1</code>, the number of unwanted gaps <em>between</em> your kept segments that the macro will delete.</p>
+
+<h3>Stage 4.5 -- the Keyboard Maestro macro: do the cutting</h3>
+
+<p>Blender has no clean headless "ripple delete between markers" operation, so the actual cutting is done by simulating the keystrokes a human would press — and that is what Keyboard Maestro automates. The macro lives in <code>blender-km-macros/</code> and is fired by <code>trigger.sh</code>:</p>
+
+<pre>
+./blender-km-macros/scripts/trigger.sh &lt;N&gt;          # N = loop count from Stage 4
+./blender-km-macros/scripts/trigger.sh --test &lt;N&gt;   # rehearse, delete nothing
+</pre>
+
+<p><code>trigger.sh</code> first checks Blender is actually running (<code>pgrep</code>), then uses <code>osascript</code> to tell the Keyboard Maestro Engine to run the macro, passing <code>N</code> as a parameter. Inside the macro that value arrives as <code>%TriggerValue%</code>, gets stored in a variable <code>BlenderDeleteCount</code>, and drives a Repeat-N-times block of the fixed delete keystrokes. There is a (TEST) twin that runs the same flow but pops a confirmation dialog instead of deleting, so you can rehearse safely.</p>
+
+<h3>Stage 5 -- vse-remove-markers.py: tidy up</h3>
+
+<p>Once the macro has done its cutting, the <code>F../u</code> markers are just clutter. This last script opens the <code>.blend</code> file, removes every timeline marker, and saves in place — leaving a clean, edit-ready project.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ PART V -->
+<div class="part">
+<h2>Part V - How It Was Made: Design Decisions</h2>
+
+<p>A few choices are worth understanding, because they explain <em>why</em> the code looks the way it does.</p>
+
+<ul>
+  <li><p><strong>The manifest is a contract, and you can edit it.</strong> Because stages talk through <code>manifest.json</code>, you can open it and delete a clip, fix a timestamp, or reorder by hand, and the rest of the pipeline obeys. The format is the API.</p></li>
+  <li><p><strong>Generated Blender scripts plus a sentinel string.</strong> Rather than fight Blender's Python console, each Blender stage writes a one-shot script to a temp file and watches stdout for a unique "I finished" line. It is a simple, robust way to drive a giant GUI app from a tiny CLI wrapper, and the same trick appears three times.</p></li>
+  <li><p><strong>Trust phones, correct camcorders.</strong> The timezone normalization deliberately distrusts camera-embedded timezone tags and instead anchors the whole batch to an iPhone/GoPro clock. The most recent relevant commit in the repo is: <em>"ingest: normalize naive-local camera timestamps to UTC."</em></p></li>
+  <li><p><strong>Ingest records intent, transcode does work.</strong> The external audio pairing is a deliberate split: ingest is fast (metadata only), so asking about audio pairs there costs nothing. The heavy lifting — running <code>audio-offset-finder</code> and re-encoding with ffmpeg — belongs in transcode, which already owns the slow per-file processing loop. The manifest <code>external_audio</code> field is the handoff.</p></li>
+  <li><p><strong>Idempotency as a habit.</strong> Skipping existing outputs and pruning the output folder from scans both come from the same instinct: re-running should be cheap and safe, never destructive.</p></li>
+  <li><p><strong>Loudness target of -16 LUFS / -1.5 dBTP.</strong> A sensible web/streaming loudness with about 1.5 dB of true-peak headroom, so mixed-source audio sits at a consistent level instead of lurching between a quiet camcorder and a loud phone.</p></li>
+  <li><p><strong>A quirk preserved in the macro docs.</strong> Keyboard Maestro's Repeat count must be the <em>bare</em> variable name <code>BlenderDeleteCount</code> (no percent signs), because that field is a calculation, not text. The README calls this out because it trips people up every time.</p></li>
+  <li><p><strong>Two repos became one, with history.</strong> The Keyboard Maestro tool started life as its own 8-commit git repository. It was folded into this repo with <code>git subtree</code> so all eight of its original commits are preserved in the combined history — not flattened away — and it now reads as pipeline "step 4.5".</p></li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ PART VI -->
+<div class="part">
+<h2>Part VI - How to Use It: Full Walkthrough</h2>
+
+<p><strong>Install the dependencies</strong> (macOS): <code>brew install ffmpeg imagemagick exiftool</code>, install Blender, and install Keyboard Maestro for the cutting step. <code>avconvert</code> is already built into macOS. If you plan to use external audio files: <code>pip install audio-offset-finder</code>.</p>
+
+<p><strong>1. Ingest.</strong> Scan the footage and read the report:</p>
+<pre>python3 ingest.py ~/footage/trip</pre>
+<p>The script scans and reports. Then it asks:</p>
+<pre>Any of these clips have a separate external audio file? [y/N]:</pre>
+<p>If you recorded a Voice Memo or used a separate recorder alongside any clip, answer <code>y</code> and drag-and-drop each video + audio file pair when prompted. Otherwise press Return to skip. Open <code>~/footage/trip/_ingest/ingest_report.md</code> and skim the flags. If a camera with no phone clip in the batch got the wrong time, re-run with the real offset:</p>
+<pre>python3 ingest.py ~/footage/trip --local-offset -04:00</pre>
+
+<p><strong>2. Transcode.</strong> Normalize everything (this is the slow step):</p>
+<pre>python3 transcode.py ~/footage/trip</pre>
+<p>Clips with paired external audio are synced and audio-swapped here automatically. Use <code>--dry-run</code> first if you want to see the plan, or <code>--no-loudnorm</code> to skip audio leveling.</p>
+
+<p><strong>3. Import into Blender.</strong> Build the project:</p>
+<pre>python3 import-vse.py ~/footage/trip --name trip_edit</pre>
+<p>Pick a resolution, confirm the clip order, and let Blender build <code>trip_edit.blend</code>.</p>
+
+<p><strong>4. Edit and mark.</strong> Open the <code>.blend</code>, do your rough edit, and place <code>F1…/u</code> marker pairs around every range you want to keep. Then validate:</p>
+<pre>python3 vse-validate-markers.py ~/footage/trip/trip_edit.blend</pre>
+<p>Note the printed <strong>loop count</strong> and the new <code>trip_edit_cut.blend</code>.</p>
+
+<p><strong>4.5. Cut.</strong> With Blender open and the mouse hovering over the VSE timeline, run the macro with that loop count:</p>
+<pre>./blender-km-macros/scripts/trigger.sh &lt;loop-count&gt;</pre>
+<p>(Rehearse with <code>--test &lt;loop-count&gt;</code> first if you like.)</p>
+
+<p><strong>5. Clean up.</strong> Remove the now-spent markers:</p>
+<pre>python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend</pre>
+<p>That is the whole loop: a folder of mismatched footage in, a clean cut Blender project out.</p>
+
+<h3>Troubleshooting quick hits</h3>
+<ul>
+  <li><em>Clips out of order by hours</em> — a camcorder's time was not corrected; re-run ingest with <code>--local-offset</code>.</li>
+  <li><em>A file sorted to the very end</em> — it had no timestamp metadata; the report flags these.</li>
+  <li><em>Import found no manifest</em> — you skipped a step; run ingest then transcode first.</li>
+  <li><em>Macro does nothing</em> — Blender must be running and the mouse must be over the timeline; <code>trigger.sh</code> will warn if Blender is closed.</li>
+  <li><em>Audio sync looks off</em> — check the standard_score printed during transcode; a score below 10 means low confidence. iPhone Voice Memos in particular can have sample-rate quirks that cause drift — a future validation step is on the roadmap.</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ PART VII -->
+<div class="part">
+<h2>Part VII - Glossary</h2>
+
+<ul>
+  <li><strong>HDR / SDR</strong> -- High / Standard Dynamic Range. HDR clips (iPhone) carry a wider brightness range and must be tone-mapped down to SDR for a normal timeline.</li>
+  <li><strong>PQ / HLG</strong> -- the two HDR transfer curves (<code>smpte2084</code> and <code>arib-std-b67</code>); their presence is how ingest detects HDR.</li>
+  <li><strong>VFR / CFR</strong> -- Variable / Constant Frame Rate. Phones shoot VFR; editors want CFR (here, 29.97 fps) so audio and video stay in sync.</li>
+  <li><strong>FPS / 29.97</strong> -- frames per second. 29.97 (technically 30000/1001) is the pipeline's target timeline rate.</li>
+  <li><strong>LUFS / dBTP</strong> -- Loudness Units Full Scale / decibels True Peak. The audio targets: -16 LUFS average loudness, -1.5 dBTP peak ceiling.</li>
+  <li><strong>loudnorm</strong> -- the ffmpeg filter that measures and adjusts loudness to those targets.</li>
+  <li><strong>Ken Burns</strong> -- the slow pan/zoom applied to still photos so they feel alive.</li>
+  <li><strong>VSE</strong> -- Blender's Video Sequence Editor, the timeline the project is built in.</li>
+  <li><strong>zscale / tonemap (Hable)</strong> -- the ffmpeg color tools used for non-Apple HDR-to-SDR conversion; "Hable" is a filmic highlight-rolloff curve.</li>
+  <li><strong>letterbox</strong> -- fitting non-16:9 content onto a 16:9 frame; here a blurred copy of the clip fills the sides instead of black bars.</li>
+  <li><strong>audio-offset-finder</strong> -- the Python tool (<code>pip install audio-offset-finder</code>) that compares two audio tracks and returns the time offset between them, used to sync external audio recordings to their matching video clips.</li>
+  <li><strong>external_audio</strong> -- a field written into <code>manifest.json</code> by ingest when you pair a video clip with a separate audio file; transcode reads it to know which clips need audio replacement.</li>
+  <li><strong>manifest</strong> -- the JSON file describing every clip; the contract between stages.</li>
+  <li><strong>idempotent</strong> -- safe to run again: re-running skips work already done.</li>
+  <li><strong>headless / --background</strong> -- running Blender with no window, driven entirely by a script.</li>
+  <li><strong>ffprobe / exiftool / identify</strong> -- the inspectors: media streams, EXIF tags, and image dimensions respectively.</li>
+  <li><strong>git subtree</strong> -- the merge technique that folded the macro repo into this one while keeping its commit history.</li>
+  <li><strong>percent-TriggerValue-percent</strong> -- the Keyboard Maestro token holding the value passed to a macro; here, the number of delete loops.</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ APPENDIX A -->
+<div class="part">
+<h2>Appendix A - The blender-km-macros README (verbatim)</h2>
+
+<h3>blender-km-macros</h3>
+
+<p>A small Keyboard Maestro macro manager for a Blender clip-deletion workflow. It bundles the exported macros plus a shell helper so the "Delete clips Blender" macro can be triggered from anywhere (terminal, scripts, other apps), running the clip-deletion cycle a number of times you pass in.</p>
+
+<p>This folder is <strong>part of the video-intake-pipeline repository</strong> — it provides <strong>step 4.5</strong> of that pipeline: the clip-cutting macro you run after <code>vse-validate-markers.py</code> and before <code>vse-remove-markers.py</code>. See the top-level README for the full footage → edit workflow.</p>
+
+<h4>Layout within the repo</h4>
+<pre>
+video-intake-pipeline/              ← repo root (ingest.py, transcode.py, …)
+└── blender-km-macros/
+    ├── README.md
+    ├── macros/
+    │   ├── Delete clips Blender.kmmacros          # the real macro
+    │   └── Delete clips Blender (TEST).kmmacros   # dry-run version (no deletions)
+    └── scripts/
+        └── trigger.sh                             # CLI wrapper around the osascript trigger
+</pre>
+
+<h4>Importing the macros</h4>
+<p><strong>Double-click each <code>.kmmacros</code> file</strong> to import it into Keyboard Maestro (or drag it onto the Keyboard Maestro Editor). Both import into a macro group named <strong>Blender group</strong>.</p>
+
+<blockquote>
+  <p><strong>Group availability:</strong> the exported group is set to be available in <strong>all applications</strong> (not restricted to Blender). This is required — the macro brings Blender to the front itself, so it must be allowed to run even when Blender isn't the front app. After importing, confirm the Blender group shows "available in all applications."</p>
+</blockquote>
+
+<h4>Using <code>trigger.sh</code></h4>
+<p><code>scripts/trigger.sh</code> triggers a macro and passes a number through as the macro's parameter. That number is how many times the macro repeats the clip-deletion cycle.</p>
+
+<pre>
+./scripts/trigger.sh 5           # run the REAL macro, 5 delete cycles
+./scripts/trigger.sh --test 5    # run the TEST macro (no deletions), see below
+./scripts/trigger.sh -t 5        # same as --test
+</pre>
+
+<blockquote>
+  <p>Paths above are relative to this <code>blender-km-macros/</code> folder. From the repo root, prefix with the folder name — e.g. <code>./blender-km-macros/scripts/trigger.sh 5</code> — which is the form the top-level README uses for step 4.5.</p>
+</blockquote>
+
+<ul>
+  <li>Requires a number argument (after the optional <code>-t</code>/<code>--test</code> flag).</li>
+  <li>Exits with an error and a usage message if the number is missing.</li>
+  <li><strong>If Blender isn't running, it does not trigger the macro</strong> — it prints a message to stderr, posts a macOS notification, and exits <code>1</code>. (The KM gate is still a backstop for other trigger paths.)</li>
+  <li>The script is executable; if needed, restore the bit with <code>chmod +x scripts/trigger.sh</code>.</li>
+</ul>
+
+<h4>Manual triggering with osascript</h4>
+<p>The same triggers without the wrapper script — substitute your count for <code>5</code>:</p>
+<pre>
+osascript -e 'tell application "Keyboard Maestro Engine" to do script "Delete clips Blender" with parameter "5"'
+osascript -e 'tell application "Keyboard Maestro Engine" to do script "Delete clips Blender (TEST)" with parameter "5"'
+</pre>
+<p>The macros read the passed value via the <code>%TriggerValue%</code> token.</p>
+
+<h4>How the macro works</h4>
+<p><code>Delete clips Blender</code> is a single, self-contained macro in the <strong>Blender group</strong>. When triggered with parameter <code>N</code>, it runs this sequence:</p>
+<ol>
+  <li><strong>Gate — only if Blender is open.</strong> If Blender is <em>not</em> running, it shows a message and cancels. Nothing else happens.</li>
+  <li><strong>Bring Blender to the front.</strong> Activates Blender so the simulated keystrokes are guaranteed to land in Blender and not whatever app you triggered from.</li>
+  <li><strong>READY? prompt.</strong> A prompt tells you to move the mouse over the Blender VSE timeline (required — those shortcuts only work when the mouse is over the timeline), then <strong>press Return to start</strong> or <strong>Escape to cancel</strong>.</li>
+  <li><strong>Capture the count.</strong> A <strong>Set Variable to Text</strong> action stores the passed parameter (<code>%TriggerValue%</code>) into the variable <code>BlenderDeleteCount</code>.</li>
+  <li><strong>Repeat the delete cycle <code>N</code> times.</strong> A <strong>Repeat</strong> action whose count is the calculation <code>BlenderDeleteCount</code> runs the fixed clip-deletion keystroke sequence (with 1-second pauses) <code>N</code> times. The count is driven entirely by the argument passed from <code>trigger.sh</code> / <code>osascript</code> — there is no hard-coded count.</li>
+</ol>
+
+<blockquote>
+  <p>The Repeat count must be the <strong>bare variable name</strong> <code>BlenderDeleteCount</code> (no <code>%</code> signs) — that field is a calculation, not text. Putting <code>%TriggerValue%</code> or <code>%BlenderDeleteCount%</code> there shows "invalid." The editor may briefly show "invalid" until the variable has a value; that's just a preview and it works at run time (the Set Variable action runs first).</p>
+</blockquote>
+
+<h4>Testing it safely (the TEST macro)</h4>
+<p><code>Delete clips Blender (TEST)</code> runs the same front-half flow — gate, bring-to-front, READY? prompt — but <strong>replaces the delete keystrokes with a confirmation dialog</strong> instead of actually deleting anything. Use it to confirm the flow works end to end (including that the count is passed through correctly) before running the real thing:</p>
+<pre>./scripts/trigger.sh --test 5</pre>
+<p>After you press Return (Start) at the READY? prompt, you'll get a <strong>"✅ TEST PASSED"</strong> dialog that echoes the count it received (<code>5</code>), with an OK button. No clips are touched.</p>
+
+<h4>Notes</h4>
+<ul>
+  <li>These files are <strong>exported from a working Keyboard Maestro setup</strong> (with one action — the TEST macro's "✅ TEST PASSED" confirmation — appended afterward), so they should import cleanly. The TEST macro's gate cancels silently if Blender isn't open (its "Blender isn't open" message did not survive an earlier import); add a message there in the editor if you want one.</li>
+  <li>A bare hotkey is intentionally <em>not</em> set: the count comes from the passed parameter, so the macros are triggered by name (via <code>trigger.sh</code>, <code>osascript</code>, or an <em>Execute a Macro</em> action), not a keypress.</li>
+  <li>The <strong>Blender group</strong> is available in all applications (required so the macro can bring Blender to the front from anywhere).</li>
+</ul>
+
+<p>After any edit in Keyboard Maestro, <strong>re-export the macro over the matching file in <code>macros/</code></strong> to keep the macros in sync — that round-trip is the source of truth, not hand-edited XML. Commit the re-exported <code>.kmmacros</code> in the combined video-intake-pipeline repo; this folder no longer has its own git history — it was merged in via <code>git subtree</code>.</p>
+</div>
+
+</body>
+</html>

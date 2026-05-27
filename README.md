@@ -10,10 +10,10 @@ Automates the journey from raw multi-camera footage (iPhone, GoPro, Canon Vixia 
 Raw footage (iPhone · GoPro · Canon · iVue · stills)
         │
         ▼
-1. ingest.py          — scan folder, extract metadata, write manifest
+1. ingest.py          — scan folder, extract metadata; optionally pair clips with external audio files; write manifest
         │
         ▼
-2. transcode.py       — normalize all media to SDR · CFR 29.97 · 16:9 MP4
+2. transcode.py       — normalize all media to SDR · CFR 29.97 · 16:9 MP4; sync + replace audio for clips paired in step 1
         │
         ▼
 3. import-vse.py      — create Blender project, import clips in chronological order
@@ -46,6 +46,7 @@ Raw footage (iPhone · GoPro · Canon · iVue · stills)
 | `exiftool` | EXIF orientation + timestamps on images | `brew install exiftool` |
 | `blender` | headless VSE import + marker scripts | [blender.org](https://blender.org) or `brew install --cask blender` |
 | Keyboard Maestro | run the clip-cutting macro (step 4.5) — macOS only | [keyboardmaestro.com](https://www.keyboardmaestro.com/) · setup in [`blender-km-macros/`](blender-km-macros/README.md) |
+| `audio-offset-finder` | sync external audio to video (optional — only needed if you use external audio files) | `pip install audio-offset-finder` |
 
 Linux Mint: replace `avconvert` with ffmpeg zscale tone-map (handled automatically). `exiftool` via `sudo apt install libimage-exiftool-perl`.
 
@@ -62,6 +63,8 @@ Scans a footage folder recursively, extracts metadata via ffprobe / exiftool, an
 - `ingest_report.md` — counts, flags (HDR / VFR / vertical / missing timestamps), timeline gaps
 
 **What it detects per file:** source (GoPro / iPhone / unknown), media type, orientation, dimensions, duration, FPS, HDR, VFR, creation timestamp.
+
+**External audio pairing.** After scanning, ingest.py asks whether any video clips have a separate, higher-quality audio file (iPhone Voice Memo, dedicated recorder, etc.). If yes, you drag-and-drop each video clip and its matching audio file. The pairing is written to `manifest.json` as an `external_audio` field — no heavy processing happens at ingest time. The actual sync and audio replacement runs in `transcode.py` (step 2) using `audio-offset-finder` to align the tracks automatically.
 
 **Timezone normalization.** iPhone and GoPro write `creation_time` in true UTC. Other
 cameras — Canon Vixia, Canon 7D, iVue Rincon — write naive *local* wall-clock time but
@@ -106,6 +109,8 @@ Reads `_ingest/manifest.json` and normalizes every file. All output lands in `_i
 | GoPro / clean video | stream-copy (fast, no re-encode) |
 
 Audio is normalized to **-16 LUFS / -1.5 dBTP** via `loudnorm` on all re-encoded clips.
+
+**External audio replacement.** Clips that have an `external_audio` entry in the manifest (set during ingest) are processed with `audio-offset-finder` to compute the sync offset, then ffmpeg replaces the native audio track with the external file. All standard transforms (HDR→SDR, VFR→CFR, vertical letterbox) still apply alongside the audio swap.
 
 On completion writes `_ingest/transcoded/manifest_transcoded.json` — the input for import-vse.py.
 
@@ -256,3 +261,4 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
 - **Proxy generation** — re-add `redo_proxies.py` as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender
 - **Subtitles** — auto-generate or import SRT / VTT and burn or soft-attach to the Blender timeline
 - **After Effects export** — convert the VSE timeline to an AE-compatible project file (via ExtendScript or `aescript` bridge) for finishing in After Effects
+- **External audio format validation** — iPhone Voice Memos are sometimes encoded at a sample rate or bitrate that causes audio drift against 29.97 CFR video; add a pre-sync check that validates the audio file's sample rate and codec before `audio-offset-finder` runs and warns (or auto-converts) if the format is likely to cause slipping
