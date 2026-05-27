@@ -906,6 +906,69 @@ def prompt_for_audio_pairs(entries: list[dict]) -> dict[str, str]:
     return pairs
 
 
+def prompt_for_camera_syncs(entries: list[dict]) -> int:
+    """
+    Pair two video clips that recorded the same take from different cameras
+    (e.g. an OBS screen capture + a DSLR) so they can be synced onto separate
+    Blender VSE tracks.
+
+    Both clips must already be scanned project files — unlike external audio,
+    both are preserved as separate videos. Stamps a shared `sync_group` id on
+    both entries and `sync_base = True` on the base (the camera whose audio
+    anchors the timeline, typically OBS). transcode.py then measures the audio
+    offset and import-vse.py overlaps them on different channels.
+
+    Returns the number of sync groups created.
+    """
+    videos = [e for e in entries if e["media_type"] == "video"]
+    if len(videos) < 2:
+        return 0
+
+    print("  Video clips found:")
+    for i, e in enumerate(videos, 1):
+        print(f"    {i:>3}.  {e['filename']}")
+    print()
+
+    ans = input("Any clips from two cameras recording the same take, to sync "
+                "onto separate tracks? [y/N]: ").strip().lower()
+    if ans != "y":
+        return 0
+
+    by_path = {e["path"]: e for e in entries}
+    groups = 0
+    while True:
+        raw_base = input("\n  Base clip — its audio anchors the sync, e.g. OBS "
+                         "(drag or paste path): ").strip()
+        if not raw_base:
+            break
+        base_path = os.path.abspath(sanitize_path(raw_base))
+        base = by_path.get(base_path)
+        if not base or base["media_type"] != "video":
+            print(f"  [warn] Not a scanned video clip: {base_path} — skipping")
+        else:
+            raw_angle = input("  Second camera clip, e.g. DSLR (drag or paste path): ").strip()
+            angle_path = os.path.abspath(sanitize_path(raw_angle))
+            angle = by_path.get(angle_path)
+            if angle_path == base_path:
+                print("  [warn] Base and second clip are the same file — skipping")
+            elif not angle or angle["media_type"] != "video":
+                print(f"  [warn] Not a scanned video clip: {angle_path} — skipping")
+            else:
+                groups += 1
+                gid = f"sync-{groups}"
+                base["sync_group"]  = gid
+                base["sync_base"]   = True
+                angle["sync_group"] = gid
+                print(f"  Synced: {os.path.basename(base_path)} (base) ⇄ "
+                      f"{os.path.basename(angle_path)}  [{gid}]")
+
+        again = input("  Another camera pair? [y/N]: ").strip().lower()
+        if again != "y":
+            break
+
+    return groups
+
+
 def sanitize_path(raw: str) -> str:
     """
     Clean up a path that may have been drag-and-dropped or copy-pasted
@@ -1020,6 +1083,12 @@ def main():
         for entry in entries:
             if entry["path"] in audio_pairs:
                 entry["external_audio"] = audio_pairs[entry["path"]]
+        print()
+
+    # Optional: sync two camera angles of the same take onto separate tracks.
+    # Stamps sync_group/sync_base on entries; transcode.py measures the offset
+    # and import-vse.py overlaps the pair on different channels.
+    if prompt_for_camera_syncs(entries):
         print()
 
     # Write outputs

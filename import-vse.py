@@ -159,6 +159,55 @@ def fps_to_blender(fps: float) -> tuple[int, float]:
 
 
 # ---------------------------------------------------------------------------
+# Import items (solo clips + synced camera pairs)
+# ---------------------------------------------------------------------------
+
+def build_import_items(entries: list[dict], fps: float) -> list[dict]:
+    """
+    Turn the chronological manifest into an ordered list of import items.
+
+    A solo clip → {"kind": "solo", "path": ...}.  A complete sync group (one
+    base + one angle) → a single {"kind": "sync", ...} item carrying both paths,
+    target channels, and the angle's frame offset; it is emitted at the position
+    of whichever member appears first chronologically, and the partner is not
+    emitted again.  Incomplete groups (a missing partner) fall back to solo so
+    nothing is silently dropped.
+    """
+    groups: dict[str, dict] = {}
+    for e in entries:
+        gid = e.get("sync_group")
+        if not gid:
+            continue
+        slot = groups.setdefault(gid, {})
+        slot["base" if e.get("sync_base") else "angle"] = e
+
+    items: list[dict] = []
+    consumed: set[str] = set()
+    for e in entries:
+        path = e["path"]
+        if path in consumed:
+            continue
+        gid = e.get("sync_group")
+        group = groups.get(gid) if gid else None
+        if group and "base" in group and "angle" in group:
+            base, angle = group["base"], group["angle"]
+            offset_s = angle.get("sync_offset_s") or 0
+            items.append({
+                "kind": "sync",
+                "base": base["path"],
+                "angle": angle["path"],
+                "offset_frames": round(offset_s * fps),
+                "base_channel": 1,
+                "angle_channel": 3,
+            })
+            consumed.add(base["path"])
+            consumed.add(angle["path"])
+        else:
+            items.append({"kind": "solo", "path": path})
+    return items
+
+
+# ---------------------------------------------------------------------------
 # Blender Python payload (written to a temp file, run headlessly)
 # ---------------------------------------------------------------------------
 
@@ -172,7 +221,7 @@ RESOLUTION_Y    = {res_y}
 FPS_INT         = {fps_int}
 FPS_BASE        = {fps_base}
 
-VIDEO_FILES = {video_files!r}
+IMPORT_ITEMS = {import_items!r}
 
 # ── Configure scene ──────────────────────────────────────────────────────────
 scene = bpy.context.scene
@@ -202,27 +251,52 @@ with bpy.context.temp_override(
     region=[r for r in areas[0].regions if r.type == "WINDOW"][0],
     screen=bpy.context.window.screen,
 ):
-    def add_clip(file_path):
-        current_frame = bpy.context.scene.frame_current
-        bpy.ops.sequencer.movie_strip_add(filepath=file_path, frame_start=current_frame)
-        active_strip = sequence_editor.active_strip
-        bpy.context.scene.frame_set(active_strip.frame_final_end)
+    def add_strip(file_path, frame_start, channel):
+        # movie_strip_add places the SOUND strip on `channel` and the MOVIE
+        # strip on channel+1, so each clip occupies the pair {channel, channel+1}.
+        # Base uses channel=1 -> {1,2}; angle uses channel=3 -> {3,4}; disjoint,
+        # no collision. Returns the active strip (same frame range as its pair).
+        bpy.ops.sequencer.movie_strip_add(
+            filepath=file_path, frame_start=int(frame_start), channel=channel)
+        return sequence_editor.active_strip
 
-    total = len(VIDEO_FILES)
+    total = len(IMPORT_ITEMS)
     imported = 0
-    for idx, file_path in enumerate(VIDEO_FILES, 1):
-        if os.path.isfile(file_path):
-            print(f"[{{idx}}/{{total}}] Importing: {{os.path.basename(file_path)}}")
-            add_clip(file_path)
-            imported += 1
+    current_frame = 1
+    for idx, item in enumerate(IMPORT_ITEMS, 1):
+        if item["kind"] == "sync":
+            base_fp, angle_fp = item["base"], item["angle"]
+            if not (os.path.isfile(base_fp) and os.path.isfile(angle_fp)):
+                print("[%d/%d] SKIPPED sync (missing file): %s | %s"
+                      % (idx, total, base_fp, angle_fp), file=sys.stderr)
+                continue
+            off = item["offset_frames"]
+            # offset_frames = angle start relative to base. Whichever camera
+            # started first anchors the slot; the other is shifted right.
+            base_start  = current_frame + (-off if off < 0 else 0)
+            angle_start = current_frame + (off if off > 0 else 0)
+            print("[%d/%d] Importing sync pair: %s (ch%d) + %s (ch%d, offset %+d frames)"
+                  % (idx, total, os.path.basename(base_fp), item["base_channel"],
+                     os.path.basename(angle_fp), item["angle_channel"], off))
+            base_strip  = add_strip(base_fp,  base_start,  item["base_channel"])
+            angle_strip = add_strip(angle_fp, angle_start, item["angle_channel"])
+            current_frame = max(base_strip.frame_final_end, angle_strip.frame_final_end)
+            imported += 2
         else:
-            print(f"[{{idx}}/{{total}}] SKIPPED (not found): {{file_path}}", file=sys.stderr)
+            file_path = item["path"]
+            if not os.path.isfile(file_path):
+                print("[%d/%d] SKIPPED (not found): %s" % (idx, total, file_path), file=sys.stderr)
+                continue
+            print("[%d/%d] Importing: %s" % (idx, total, os.path.basename(file_path)))
+            strip = add_strip(file_path, current_frame, 1)
+            current_frame = strip.frame_final_end
+            imported += 1
 
     # Select all strips so they are visible when Blender opens
     for strip in sequence_editor.sequences:
         strip.select = True
 
-print(f"Imported {{imported}} of {{total}} clips.")
+print("Imported %d clip(s) across %d timeline slot(s)." % (imported, total))
 
 # ── Apply Video Editing workspace ────────────────────────────────────────────
 template_path = None
@@ -314,7 +388,16 @@ def write_log(project_dir: str, blend_file: str, entries: list[dict],
     ]
     for i, e in enumerate(entries, 1):
         ct = e.get("creation_time") or "no timestamp"
-        lines.append(f"  {i:>3}.  {ct}  {e['filename']}")
+        gid = e.get("sync_group")
+        tag = ""
+        if gid:
+            if e.get("sync_base"):
+                tag = f"  [{gid} base → ch1/2]"
+            else:
+                off = e.get("sync_offset_s")
+                off_str = f", offset {off:+.3f}s" if off is not None else ""
+                tag = f"  [{gid} angle → ch3/4{off_str}]"
+        lines.append(f"  {i:>3}.  {ct}  {e['filename']}{tag}")
 
     with open(log_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -421,10 +504,18 @@ def main():
     print(f"  {'-'*4}  {'-'*20}  {'-'*40}")
     for i, e in enumerate(entries, 1):
         ct = (e.get("creation_time") or "no timestamp").replace("T", " ").rstrip("Z")
-        print(f"  {i:<4}  {ct:<20}  {e['filename']}")
+        tag = ""
+        gid = e.get("sync_group")
+        if gid:
+            role = "base → ch1/2" if e.get("sync_base") else "angle → ch3/4"
+            tag = f"   ⇄ {gid} ({role})"
+        print(f"  {i:<4}  {ct:<20}  {e['filename']}{tag}")
     print()
 
+    n_sync = sum(1 for e in entries if e.get("sync_group") and e.get("sync_base"))
     say(f"{len(entries)} clip(s) will be imported in this order.")
+    if n_sync:
+        say(f"{n_sync} synced camera pair(s) will overlap on separate tracks (ch1/2 + ch3/4).")
     print("  Looks good? (y/n): ", end="", flush=True)
     if not input().strip().lower().startswith("y"):
         die("Aborted. Re-run ingest.py / transcode.py to change the order.")
@@ -436,15 +527,15 @@ def main():
     # ── Build and run the Blender script ─────────────────────────────────────
     header("Step 6: Importing into Blender VSE")
 
-    video_files = [e["path"] for e in entries]
+    import_items = build_import_items(entries, fps)
 
     script_src = IMPORT_TEMPLATE.format(
-        blend_path = blend_file,
-        res_x      = res_x,
-        res_y      = res_y,
-        fps_int    = fps_int,
-        fps_base   = fps_base,
-        video_files= video_files,
+        blend_path  = blend_file,
+        res_x       = res_x,
+        res_y       = res_y,
+        fps_int     = fps_int,
+        fps_base    = fps_base,
+        import_items= import_items,
     )
 
     # Write to a temp file that Blender can read

@@ -345,6 +345,43 @@ def find_audio_offset(video_path: str, audio_path: str) -> tuple[float, float]:
     return float(data["time_offset"]), float(data["standard_score"])
 
 
+def compute_sync_offsets(results: list[dict]) -> None:
+    """
+    For each sync group (two camera angles of the same take) measure the audio
+    offset between the transcoded base and angle clips and stamp `sync_offset_s`
+    onto the angle entry.  import-vse.py uses it to overlap the pair on separate
+    tracks.  Both files are left untouched — nothing is muxed.
+
+    `sync_offset_s` is seconds the angle starts relative to the base (positive =
+    angle started later; may be negative).  Operates on the transcoded outputs,
+    so both clips share the target fps and the frame math stays consistent.
+    """
+    groups: dict[str, list[dict]] = {}
+    for e in results:
+        gid = e.get("sync_group")
+        if gid:
+            groups.setdefault(gid, []).append(e)
+
+    for gid, members in groups.items():
+        base  = next((m for m in members if m.get("sync_base")), None)
+        angle = next((m for m in members if not m.get("sync_base")), None)
+        if not base or not angle:
+            warn(f"  sync {gid}: expected one base + one angle, got "
+                 f"{len(members)} usable clip(s) — leaving unsynced")
+            continue
+        say(f"  sync {gid}: measuring offset "
+            f"{os.path.basename(angle['path'])} ↔ {os.path.basename(base['path'])}…")
+        try:
+            offset, score = find_audio_offset(angle["path"], base["path"])
+        except Exception as e:
+            warn(f"    audio-offset-finder failed: {e} — leaving unsynced (offset 0)")
+            continue
+        angle["sync_offset_s"] = round(offset, 3)
+        say(f"    offset: {offset}s  (score: {score:.1f})")
+        if score < 10:
+            warn(f"    low confidence sync (score {score:.1f}) — verify alignment in Blender")
+
+
 def match_external_audio(video_path: str, audio_path: str, ffmpeg_bin: str,
                          ffprobe_bin: str, tmp_dir: str) -> str:
     """
@@ -782,7 +819,7 @@ def main():
     ffprobe_bin    = find_tool("ffprobe",    ["/opt/homebrew/bin/ffprobe", "/usr/bin/ffprobe"])
     convert_bin    = find_tool("convert",    ["/opt/homebrew/bin/convert", "/usr/bin/convert"])
     avconvert_bin  = find_tool("avconvert",  ["/usr/bin/avconvert"])
-    if any(e.get("external_audio") for e in entries):
+    if any(e.get("external_audio") or e.get("sync_group") for e in entries):
         find_tool("audio-offset-finder")
 
     # ── Summary ──────────────────────────────────────────────────────────────
@@ -793,6 +830,7 @@ def main():
     iphone_v      = [e for e in videos  if e.get("source") == "iphone"]
     vert_v        = [e for e in videos  if e.get("orientation") == "vertical"]
     ext_audio_v   = [e for e in videos  if e.get("external_audio")]
+    sync_v        = [e for e in videos  if e.get("sync_group")]
     passthru      = [e for e in videos  if not e.get("is_hdr") and e.get("source") != "iphone"
                                            and e.get("orientation") != "vertical"
                                            and not e.get("external_audio")]
@@ -811,6 +849,8 @@ def main():
     print(f"             {len(vert_v)} vertical video(s) → 16:9 letterbox (manifest; re-checked per clip)")
     if ext_audio_v:
         print(f"             {len(ext_audio_v)} clip(s) → audio replaced from external file")
+    if sync_v:
+        print(f"             {len(sync_v)} clip(s) → camera-sync groups (offset measured, kept separate)")
     print(f"             {len(passthru)} GoPro/other video(s) passing through unchanged")
     if args.dry_run:
         print(f"  Mode     : DRY RUN — no files will be written")
@@ -888,6 +928,10 @@ def main():
             failed += 1
 
         print()  # blank line between files
+
+    # ── Measure camera-sync offsets (two angles kept as separate files) ──────
+    if not args.dry_run and results:
+        compute_sync_offsets(results)
 
     # ── Write updated manifest ───────────────────────────────────────────────
     if not args.dry_run and results:
