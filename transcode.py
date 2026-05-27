@@ -37,8 +37,10 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -343,6 +345,47 @@ def find_audio_offset(video_path: str, audio_path: str) -> tuple[float, float]:
     return float(data["time_offset"]), float(data["standard_score"])
 
 
+def match_external_audio(video_path: str, audio_path: str, ffmpeg_bin: str,
+                         ffprobe_bin: str, tmp_dir: str) -> str:
+    """
+    Conform an external audio file to the video's audio stream and return the
+    path to a freshly written WAV.
+
+    Probes the video's first audio stream (a:0) for sample rate + channel
+    count, then resamples the external file to match.  Voice Memos records at
+    44100 Hz while GoPro uses 48000 Hz; muxing mismatched rates without
+    resampling lets the external track drift out of sync over the clip, so we
+    align them up front.  Output is PCM WAV regardless of the input format
+    (ffmpeg detects the source by probing, not by extension).
+    """
+    probe = subprocess.run(
+        [ffprobe_bin, "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=sample_rate,channels,codec_name",
+         "-of", "default=noprint_wrappers=1", video_path],
+        capture_output=True, text=True, timeout=30,
+    )
+    # Parse key=value lines so we don't depend on ffprobe's field ordering.
+    fields = {}
+    for line in probe.stdout.splitlines():
+        key, sep, val = line.partition("=")
+        if sep:
+            fields[key.strip()] = val.strip()
+    sample_rate = fields.get("sample_rate") or "48000"
+    channels    = fields.get("channels")    or "2"
+    codec       = fields.get("codec_name")  or "?"
+
+    say(f"    video audio: {codec} {sample_rate} Hz {channels} ch — conforming external file")
+
+    matched = os.path.join(tmp_dir, "audio_matched.wav")
+    cmd = [ffmpeg_bin, "-y", "-i", audio_path,
+           "-ar", sample_rate, "-ac", channels, matched]
+    result = subprocess.run(cmd, capture_output=True, timeout=600)
+    if result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace")
+        raise RuntimeError(stderr[-800:] or "ffmpeg audio conform exited non-zero")
+    return matched
+
+
 def transcode_with_external_audio(entry: dict, dst: str, ffmpeg_bin: str,
                                    avconvert_bin: str, ffprobe_bin: str,
                                    target_fps: float = 29.97,
@@ -376,82 +419,95 @@ def transcode_with_external_audio(entry: dict, dst: str, ffmpeg_bin: str,
     say(f"               audio: {os.path.basename(audio_path)}")
 
     if dry_run:
-        skip(f"    [dry-run] would find offset then ffmpeg with external audio")
+        skip(f"    [dry-run] would conform audio, find offset, then ffmpeg with external audio")
         return True
 
-    # Find sync offset
-    say(f"    analysing audio offset…")
-    try:
-        offset, score = find_audio_offset(src, audio_path)
-    except Exception as e:
-        warn(f"    audio-offset-finder failed: {e}")
-        return False
-
-    say(f"    offset: {offset}s  (score: {score:.1f})")
-    if score < 10:
-        warn(f"    low confidence sync (score {score:.1f}) — result may be inaccurate")
-
-    # Step 1: avconvert for iPhone HDR
-    ffmpeg_src = src
+    # Per-clip scratch dir for the conformed audio WAV; removed in finally.
+    tmp_dir    = tempfile.mkdtemp(prefix=f"pipeline_{os.getpid()}_")
     m4v_tmp    = None
-    if use_avconvert:
-        m4v_tmp = dst.replace(".mp4", "_sdr_tmp.m4v")
-        if not avconvert_hdr_to_sdr(src, m4v_tmp, avconvert_bin):
-            return False
-        ffmpeg_src = m4v_tmp
-        is_hdr = False
-
-    vf_str            = build_ffmpeg_filter(is_hdr, is_vertical)
-    use_filter_complex = is_vertical
-    needs_video_work  = is_hdr or force_cfr or is_vertical
-
-    LOUDNORM_FILTER = "loudnorm=I=-16:LRA=11:TP=-1.5"
-    audio_args = ["-c:a", "aac", "-b:a", "192k"]
-    if loudnorm:
-        audio_args += ["-af", LOUDNORM_FILTER]
-
-    # Build inputs — seek into whichever file started later
-    if offset < 0:
-        cmd = [ffmpeg_bin, "-y", "-ss", str(abs(offset)), "-i", ffmpeg_src, "-i", audio_path]
-    else:
-        cmd = [ffmpeg_bin, "-y", "-i", ffmpeg_src, "-ss", str(offset), "-i", audio_path]
-
-    # Map: video from input 0, audio from input 1
-    if use_filter_complex:
-        cmd += ["-filter_complex", vf_str, "-map", "[out]", "-map", "1:a"]
-    else:
-        cmd += ["-map", "0:v", "-map", "1:a"]
-        if vf_str:
-            cmd += ["-vf", vf_str]
-
-    if needs_video_work:
-        cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "fast", "-pix_fmt", "yuv420p"]
-        if force_cfr:
-            cmd += ["-r", "30000/1001", "-fps_mode", "cfr"]
-    else:
-        cmd += ["-c:v", "copy"]
-
-    cmd += audio_args
-    cmd.append(dst)
-
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=3600)
-        if result.returncode != 0:
-            stderr = result.stderr.decode(errors="replace")
-            warn(f"  ffmpeg failed for {os.path.basename(ffmpeg_src)}:\n{stderr[-800:]}")
+        # Conform the external audio to the video's sample rate + channels
+        # *before* sync/mux, then use the WAV for every downstream step.
+        try:
+            audio_path = match_external_audio(src, audio_path, ffmpeg_bin,
+                                              ffprobe_bin, tmp_dir)
+        except Exception as e:
+            warn(f"    audio conform failed: {e}")
             return False
-    except subprocess.TimeoutExpired:
-        warn(f"  ffmpeg timed out for {os.path.basename(ffmpeg_src)}")
-        return False
+
+        # Find sync offset (against the conformed WAV)
+        say(f"    analysing audio offset…")
+        try:
+            offset, score = find_audio_offset(src, audio_path)
+        except Exception as e:
+            warn(f"    audio-offset-finder failed: {e}")
+            return False
+
+        say(f"    offset: {offset}s  (score: {score:.1f})")
+        if score < 10:
+            warn(f"    low confidence sync (score {score:.1f}) — result may be inaccurate")
+
+        # Step 1: avconvert for iPhone HDR
+        ffmpeg_src = src
+        if use_avconvert:
+            m4v_tmp = dst.replace(".mp4", "_sdr_tmp.m4v")
+            if not avconvert_hdr_to_sdr(src, m4v_tmp, avconvert_bin):
+                return False
+            ffmpeg_src = m4v_tmp
+            is_hdr = False
+
+        vf_str            = build_ffmpeg_filter(is_hdr, is_vertical)
+        use_filter_complex = is_vertical
+        needs_video_work  = is_hdr or force_cfr or is_vertical
+
+        LOUDNORM_FILTER = "loudnorm=I=-16:LRA=11:TP=-1.5"
+        audio_args = ["-c:a", "aac", "-b:a", "192k"]
+        if loudnorm:
+            audio_args += ["-af", LOUDNORM_FILTER]
+
+        # Build inputs — seek into whichever file started later
+        if offset < 0:
+            cmd = [ffmpeg_bin, "-y", "-ss", str(abs(offset)), "-i", ffmpeg_src, "-i", audio_path]
+        else:
+            cmd = [ffmpeg_bin, "-y", "-i", ffmpeg_src, "-ss", str(offset), "-i", audio_path]
+
+        # Map: video from input 0, audio from input 1
+        if use_filter_complex:
+            cmd += ["-filter_complex", vf_str, "-map", "[out]", "-map", "1:a"]
+        else:
+            cmd += ["-map", "0:v", "-map", "1:a"]
+            if vf_str:
+                cmd += ["-vf", vf_str]
+
+        if needs_video_work:
+            cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "fast", "-pix_fmt", "yuv420p"]
+            if force_cfr:
+                cmd += ["-r", "30000/1001", "-fps_mode", "cfr"]
+        else:
+            cmd += ["-c:v", "copy"]
+
+        cmd += audio_args
+        cmd.append(dst)
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=3600)
+            if result.returncode != 0:
+                stderr = result.stderr.decode(errors="replace")
+                warn(f"  ffmpeg failed for {os.path.basename(ffmpeg_src)}:\n{stderr[-800:]}")
+                return False
+        except subprocess.TimeoutExpired:
+            warn(f"  ffmpeg timed out for {os.path.basename(ffmpeg_src)}")
+            return False
+
+        ok(f"  {os.path.basename(dst)}")
+        return True
     finally:
         if m4v_tmp and os.path.isfile(m4v_tmp):
             try:
                 os.remove(m4v_tmp)
             except OSError:
                 pass
-
-    ok(f"  {os.path.basename(dst)}")
-    return True
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def transcode_video(entry: dict, dst: str, ffmpeg_bin: str, avconvert_bin: str,

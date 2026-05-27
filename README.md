@@ -261,4 +261,3 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
 - **Proxy generation** — re-add `redo_proxies.py` as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender
 - **Subtitles** — auto-generate or import SRT / VTT and burn or soft-attach to the Blender timeline
 - **After Effects export** — convert the VSE timeline to an AE-compatible project file (via ExtendScript or `aescript` bridge) for finishing in After Effects
-- **External audio format validation** — iPhone Voice Memos are sometimes encoded at a sample rate or bitrate that causes audio drift against 29.97 CFR video; add a pre-sync check that validates the audio file's sample rate and codec before `audio-offset-finder` runs and warns (or auto-converts) if the format is likely to cause slipping
