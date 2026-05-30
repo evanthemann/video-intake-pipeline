@@ -60,9 +60,40 @@ GAP_THRESHOLD_S = 600  # 10 minutes
 # Source detection
 # ---------------------------------------------------------------------------
 
-def detect_source(filename: str, ffprobe_tags: dict) -> str:
-    """Return 'gopro', 'iphone', or 'unknown'."""
-    base = os.path.basename(filename).lower()
+def exiftool_make_model(path: str) -> tuple[str | None, str | None]:
+    """
+    Read Make and Model via exiftool. Returns (make, model), either of which
+    may be None. iPhones expose model in ffprobe directly, but Canons and
+    GoPros stash it in an EXIF/uuid box that ffprobe doesn't surface — exiftool
+    reads them all uniformly.
+    """
+    try:
+        result = subprocess.run(
+            ["exiftool", "-Make", "-Model", "-j", path],
+            capture_output=True, text=True, timeout=10
+        )
+        data = json.loads(result.stdout)
+        if not data:
+            return None, None
+        entry = data[0]
+    except (FileNotFoundError, json.JSONDecodeError, IndexError):
+        return None, None
+    except Exception:
+        return None, None
+    make = entry.get("Make") or None
+    model = entry.get("Model") or None
+    return make, model
+
+
+def detect_source(path: str, ffprobe_tags: dict,
+                  exif_make: str | None = None,
+                  exif_model: str | None = None) -> str:
+    """
+    Return a short source identifier: 'iphone', 'gopro', 'obs', a camera brand
+    ('canon', 'sony', ...), or 'unknown'. Cheap heuristics first; exiftool
+    Make/Model (passed in if already fetched) covers everything else.
+    """
+    base = os.path.basename(path).lower()
 
     # 1. Filename prefix heuristic
     for prefix in GOPRO_PREFIXES:
@@ -85,6 +116,19 @@ def detect_source(filename: str, ffprobe_tags: dict) -> str:
     # 3. iPhone naming patterns
     if re.match(r"img_\d+", base) or base.startswith("rpreplay"):
         return "iphone"
+
+    # 4. OBS default filename template "YYYY-MM-DD HH-MM-SS"
+    if OBS_FILENAME_RE.search(base):
+        return "obs"
+
+    # 5. exiftool Make/Model — catches Canon, Sony, etc. via EXIF box.
+    # Caller can pass these in to avoid a duplicate exiftool call.
+    if exif_make is None and exif_model is None:
+        exif_make, exif_model = exiftool_make_model(path)
+    if exif_make:
+        return exif_make.split()[0].lower()  # "Canon Inc." → "canon"
+    if exif_model:
+        return exif_model.split()[0].lower()  # "Canon EOS 7D" → "canon"
 
     return "unknown"
 
@@ -135,6 +179,26 @@ def parse_creation_time(tags: dict) -> str | None:
     try:
         dt = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S")
         return dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+    except ValueError:
+        return None
+
+
+OBS_FILENAME_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})[ _](\d{2})-(\d{2})-(\d{2})")
+
+
+def parse_obs_filename_dt(filename: str) -> datetime | None:
+    """
+    OBS's default filename template is "%CCYY-%MM-%DD %hh-%mm-%ss" — local
+    wall-clock at start of recording. OBS writes no creation_time tag, so when
+    that tag is missing we recover the time from the filename. Returns a naive
+    datetime, or None if the filename doesn't match.
+    """
+    m = OBS_FILENAME_RE.search(os.path.basename(filename))
+    if not m:
+        return None
+    try:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                        int(m.group(4)), int(m.group(5)), int(m.group(6)))
     except ValueError:
         return None
 
@@ -381,7 +445,18 @@ def inspect_file(path: str) -> dict:
     tags.update(video_stream.get("tags", {}))
     tags.update(fmt.get("tags", {}))
 
-    source = detect_source(filename, tags)
+    # Camera model: free for iPhones (in ffprobe tags); exiftool for everyone else.
+    # We hand the exiftool result to detect_source so it doesn't re-fetch.
+    ffprobe_model = tags.get("com.apple.quicktime.model") or tags.get("model")
+    if ffprobe_model:
+        camera_model = ffprobe_model
+        exif_make = None
+        exif_model = None
+    else:
+        exif_make, exif_model = exiftool_make_model(path)
+        camera_model = exif_model
+
+    source = detect_source(path, tags, exif_make, exif_model)
 
     # Dimensions
     width = video_stream.get("width") or fmt.get("width")
@@ -453,7 +528,8 @@ def inspect_file(path: str) -> dict:
             creation_time = parse_creation_time(tags)
         else:
             creation_time = None  # filled in by the batch-offset pass
-            naive_dt = parse_naive_creation_dt(tags)
+            # OBS writes no creation_time tag — recover from its filename.
+            naive_dt = parse_naive_creation_dt(tags) or parse_obs_filename_dt(filename)
             naive_local_iso = naive_dt.isoformat() if naive_dt else None
     else:
         creation_time = parse_creation_time(tags)
@@ -464,6 +540,7 @@ def inspect_file(path: str) -> dict:
         "path": os.path.abspath(path),
         "filename": filename,
         "source": source,
+        "camera_model": camera_model,
         "media_type": media_type,
         "orientation": orientation,
         "width": width,
@@ -841,13 +918,14 @@ def write_ingest_report(entries: list[dict], input_dir: str, output_dir: str,
     a(f"")
     a(f"## All files in chronological order")
     a(f"")
-    a(f"| # | Date/Time (local) | Source | Type | Orient | Duration | Filename |")
-    a(f"|---|---|---|---|---|---|---|")
+    a(f"| # | Date/Time (local) | Source | Camera model | Type | Orient | Duration | Filename |")
+    a(f"|---|---|---|---|---|---|---|---|")
     for i, e in enumerate(entries, 1):
         a(
             f"| {i} "
             f"| {disp_time(e)} "
             f"| {e['source']} "
+            f"| {e.get('camera_model') or '—'} "
             f"| {e['media_type']} "
             f"| {e['orientation']} "
             f"| {fmt_duration(e['duration_s'])} "

@@ -43,7 +43,7 @@ Raw footage (iPhone · GoPro · Canon · iVue · stills)
 | `ffmpeg` + `ffprobe` | transcode, probe metadata | `brew install ffmpeg` |
 | `avconvert` | iPhone HDR → SDR (macOS only) | built-in at `/usr/bin/avconvert` |
 | ImageMagick `convert` + `identify` | image padding, dimension reads | `brew install imagemagick` |
-| `exiftool` | EXIF orientation + timestamps on images | `brew install exiftool` |
+| `exiftool` | EXIF orientation + timestamps on images; camera make/model detection on video | `brew install exiftool` |
 | `blender` | headless VSE import + marker scripts | [blender.org](https://blender.org) or `brew install --cask blender` |
 | Keyboard Maestro | run the clip-cutting macro (step 4.5) — macOS only | [keyboardmaestro.com](https://www.keyboardmaestro.com/) · setup in [`blender-km-macros/`](blender-km-macros/README.md) |
 | `audio-offset-finder` | sync external audio to video, and align two camera angles (optional — only needed for external audio or camera-sync pairing) | `pip install audio-offset-finder` |
@@ -62,7 +62,9 @@ Scans a footage folder recursively, extracts metadata via ffprobe / exiftool, an
 - `clips_ordered.txt` — human-readable chronological list
 - `ingest_report.md` — counts, flags (HDR / VFR / vertical / missing timestamps), timeline gaps
 
-**What it detects per file:** source (GoPro / iPhone / unknown), media type, orientation, dimensions, duration, FPS, HDR, VFR, creation timestamp.
+**What it detects per file:** source, camera model, media type, orientation, dimensions, duration, FPS, HDR, VFR, creation timestamp.
+
+**Camera identification.** `source` is a short token used downstream: `iphone`, `gopro`, `obs`, or a vendor brand (`canon`, `sony`, `panasonic`, …) for anything else. iPhones and GoPros come from cheap ffprobe/filename heuristics; OBS screen captures are identified by their default filename pattern (`YYYY-MM-DD HH-MM-SS.mkv`); everything else falls through to an exiftool `Make`/`Model` lookup, so new camera brands work without code changes. `camera_model` carries the full string exposed by the file — e.g. `iPhone 16 Pro`, `HERO12 Black`, `Canon EOS 7D`, `Canon VIXIA HF R40`. Two iPhones of different generations in the same shoot show up distinctly in this field. OBS captures and anything else with no Make/Model leave it as `—` in the report.
 
 **External audio pairing.** After scanning, ingest.py asks whether any video clips have a separate, higher-quality audio file (iPhone Voice Memo, dedicated recorder, etc.). If yes, you drag-and-drop each video clip and its matching audio file. The pairing is written to `manifest.json` as an `external_audio` field — no heavy processing happens at ingest time. The actual sync and audio replacement runs in `transcode.py` (step 2) using `audio-offset-finder` to align the tracks automatically.
 
@@ -70,14 +72,16 @@ Scans a footage folder recursively, extracts metadata via ffprobe / exiftool, an
 
 **Timezone normalization.** iPhone and GoPro write `creation_time` in true UTC. Other
 cameras — Canon Vixia, Canon 7D, iVue Rincon — write naive *local* wall-clock time but
-still label it `Z`, so left alone they sort hours away from the Apple/GoPro clips. Ingest
-detects clips with no UTC proof, reads the real local offset from an iPhone/GoPro clip in
-the same batch (e.g. `-0400`), and rewrites the naive clips to true UTC so every clip
-shares one clock. If there is no Apple/GoPro clip in the batch it falls back to this
-machine's timezone (and warns) — use `--local-offset` to set it explicitly. Any per-camera
-embedded timezone tag is deliberately ignored, since it is often misconfigured (the Vixia
-reports `-05:00` even when shooting in `-04:00`). Displayed times in the reports are local
-wall-clock.
+still label it `Z`, so left alone they sort hours away from the Apple/GoPro clips. OBS
+writes no `creation_time` tag at all, but its default filename template
+(`%CCYY-%MM-%DD %hh-%mm-%ss.mkv`) encodes the local start-of-recording time, which ingest
+parses as another naive-local source. Ingest then reads the real local offset from an
+iPhone/GoPro clip in the same batch (e.g. `-0400`) and rewrites all naive clips to true
+UTC so every clip shares one clock. If there is no Apple/GoPro clip in the batch it falls
+back to this machine's timezone (and warns) — use `--local-offset` to set it explicitly.
+Any per-camera embedded timezone tag is deliberately ignored, since it is often
+misconfigured (the Vixia reports `-05:00` even when shooting in `-04:00`). Displayed times
+in the reports are local wall-clock.
 
 ```bash
 python3 ingest.py /path/to/footage
