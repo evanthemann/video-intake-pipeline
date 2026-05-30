@@ -11,3 +11,6 @@ _ingest/
 *.blend
 *.blend1
 blender_import.log
+
+# Locally rendered guide PDFs (HTML is the canonical source in the repo)
+*.pdf
