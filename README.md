@@ -273,6 +273,8 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
 
 ## Roadmap
 
+- **End-of-script "next step" hints** — every script ends by printing the exact command for the next stage with the paths it just produced. After `ingest.py`, suggest the `transcode.py` invocation with the project dir. After `transcode.py`, the `import-vse.py` line. After `import-vse.py`, the manual-edit reminder plus the `vse-validate-markers.py` command targeting the just-written `.blend`. After `vse-validate-markers.py`, the `trigger.sh <N>` line with the loop count and the follow-up `vse-remove-markers.py` against the `_cut.blend`. Reduces the cognitive load of stitching the five-step pipeline together by hand.
+- **Auto-handle the head/tail trims of the timeline** — the Keyboard Maestro cutting macro only acts on F/u pairs in the middle of the timeline; the pre-first-F head and the post-last-u tail are currently trimmed manually in Blender. Add a way to handle them automatically — possibilities include treating timeline start/end as implicit bookend markers, adopting an `F0` / final-`u` convention, or extending the KM macro to do the bookend trims itself. Decide approach when picked up.
 - **Proxy generation** — re-add `redo_proxies.py` as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender
 - **Subtitles** — auto-generate or import SRT / VTT and burn or soft-attach to the Blender timeline
 - **After Effects export** — convert the VSE timeline to an AE-compatible project file (via ExtendScript or `aescript` bridge) for finishing in After Effects
