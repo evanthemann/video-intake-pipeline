@@ -162,6 +162,38 @@ def fps_to_blender(fps: float) -> tuple[int, float]:
 # Import items (solo clips + synced camera pairs)
 # ---------------------------------------------------------------------------
 
+def allocate_track_channels(entries: list[dict]) -> tuple[dict[str, int], dict[str, int]]:
+    """
+    Pre-scan the chronological manifest and assign every unique secondary
+    track source a stable VSE channel so all strips from the same recorder
+    or camera share one row in Blender.
+
+    Returns (sync_angle_channels, audio_channels):
+      - sync_angle_channels[source] = base channel of the pair (movie on +1)
+      - audio_channels[source]      = single channel for external-audio strips
+
+    Anchor video always claims ch1/2 (sound + movie). Sync-angle sources fill
+    channel pairs from ch3 upward in first-seen order; external-audio sources
+    fill single channels above the highest sync pair.
+    """
+    sync_order: list[str] = []
+    audio_order: list[str] = []
+    for e in entries:
+        if e.get("sync_group") and not e.get("sync_base"):
+            src = e.get("source") or "unknown"
+            if src not in sync_order:
+                sync_order.append(src)
+        if e.get("external_audio_conformed_path"):
+            src = e.get("external_audio_source") or "audio"
+            if src not in audio_order:
+                audio_order.append(src)
+
+    sync_angle_channels = {src: 3 + 2 * i for i, src in enumerate(sync_order)}
+    next_free = 3 + 2 * len(sync_order)
+    audio_channels = {src: next_free + i for i, src in enumerate(audio_order)}
+    return sync_angle_channels, audio_channels
+
+
 def build_import_items(entries: list[dict], fps: float) -> list[dict]:
     """
     Turn the chronological manifest into an ordered list of import items.
@@ -172,7 +204,13 @@ def build_import_items(entries: list[dict], fps: float) -> list[dict]:
     of whichever member appears first chronologically, and the partner is not
     emitted again.  Incomplete groups (a missing partner) fall back to solo so
     nothing is silently dropped.
+
+    Channels for secondary tracks are looked up from allocate_track_channels so
+    every sync angle of the same camera (or every external-audio strip from the
+    same recorder) lands on one shared row.
     """
+    sync_angle_channels, audio_channels = allocate_track_channels(entries)
+
     groups: dict[str, dict] = {}
     for e in entries:
         gid = e.get("sync_group")
@@ -192,28 +230,30 @@ def build_import_items(entries: list[dict], fps: float) -> list[dict]:
         if group and "base" in group and "angle" in group:
             base, angle = group["base"], group["angle"]
             offset_s = angle.get("sync_offset_s") or 0
+            angle_src = angle.get("source") or "unknown"
             items.append({
                 "kind": "sync",
                 "base": base["path"],
                 "angle": angle["path"],
                 "offset_frames": round(offset_s * fps),
                 "base_channel": 1,
-                "angle_channel": 3,
+                "angle_channel": sync_angle_channels[angle_src],
             })
             consumed.add(base["path"])
             consumed.add(angle["path"])
         elif e.get("external_audio_conformed_path"):
-            # Overlay: keep the clip's original audio, drop the paired audio
-            # file onto a separate VSE channel aligned with the offset measured
-            # in transcode.py. Video on ch1/2, external audio on ch3.
+            # Overlay: keep the clip's original audio; drop the paired audio
+            # file onto its source's assigned channel, aligned with the offset
+            # measured in transcode.py.
             offset_s = e.get("external_audio_offset_s") or 0
+            aud_src = e.get("external_audio_source") or "audio"
             items.append({
                 "kind": "extaudio",
                 "video": path,
                 "audio": e["external_audio_conformed_path"],
                 "offset_frames": round(offset_s * fps),
                 "video_channel": 1,
-                "audio_channel": 3,
+                "audio_channel": audio_channels[aud_src],
             })
         else:
             items.append({"kind": "solo", "path": path})
@@ -414,6 +454,7 @@ def write_log(project_dir: str, blend_file: str, entries: list[dict],
               res_x: int, res_y: int, fps: float) -> str:
     log_path = os.path.join(project_dir, "blender_import.log")
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    sync_angle_channels, audio_channels = allocate_track_channels(entries)
     lines = [
         f"imported_at : {now}",
         f"blend_file  : {blend_file}",
@@ -421,8 +462,16 @@ def write_log(project_dir: str, blend_file: str, entries: list[dict],
         f"fps         : {fps}",
         f"clip_count  : {len(entries)}",
         "",
-        "clips (in import order):",
     ]
+    if sync_angle_channels or audio_channels:
+        lines.append("channel routing:")
+        lines.append("  ch1/2  primary video (sound + movie)")
+        for src, ch in sync_angle_channels.items():
+            lines.append(f"  ch{ch}/{ch+1}  sync angle: {src}")
+        for src, ch in audio_channels.items():
+            lines.append(f"  ch{ch}    external audio: {src}")
+        lines.append("")
+    lines.append("clips (in import order):")
     for i, e in enumerate(entries, 1):
         ct = e.get("creation_time") or "no timestamp"
         gid = e.get("sync_group")
@@ -433,12 +482,18 @@ def write_log(project_dir: str, blend_file: str, entries: list[dict],
             else:
                 off = e.get("sync_offset_s")
                 off_str = f", offset {off:+.3f}s" if off is not None else ""
-                tag = f"  [{gid} angle → ch3/4{off_str}]"
+                src = e.get("source") or "unknown"
+                ch = sync_angle_channels.get(src)
+                ch_str = f"ch{ch}/{ch+1}" if ch else "?"
+                tag = f"  [{gid} angle {src} → {ch_str}{off_str}]"
         elif e.get("external_audio_conformed_path"):
             off = e.get("external_audio_offset_s")
             off_str = f", offset {off:+.3f}s" if off is not None else ""
             aud = os.path.basename(e["external_audio_conformed_path"])
-            tag = f"  [ext-audio → ch3: {aud}{off_str}]"
+            src = e.get("external_audio_source") or "audio"
+            ch = audio_channels.get(src)
+            ch_str = f"ch{ch}" if ch else "?"
+            tag = f"  [ext-audio ({src}) → {ch_str}: {aud}{off_str}]"
         lines.append(f"  {i:>3}.  {ct}  {e['filename']}{tag}")
 
     with open(log_path, "w", encoding="utf-8") as f:
@@ -542,6 +597,17 @@ def main():
     # ── Confirm clip order ───────────────────────────────────────────────────
     header("Step 4: Import Order")
 
+    sync_angle_channels, audio_channels = allocate_track_channels(entries)
+
+    if sync_angle_channels or audio_channels:
+        print("  Channel routing (every strip from a given source shares one row):")
+        print(f"    ch1/2  primary video (sound + movie)")
+        for src, ch in sync_angle_channels.items():
+            print(f"    ch{ch}/{ch+1}  sync angle: {src}")
+        for src, ch in audio_channels.items():
+            print(f"    ch{ch}    external audio: {src}")
+        print()
+
     print(f"  {'#':<4}  {'DATE/TIME':<20}  FILENAME")
     print(f"  {'-'*4}  {'-'*20}  {'-'*40}")
     for i, e in enumerate(entries, 1):
@@ -549,12 +615,18 @@ def main():
         tag = ""
         gid = e.get("sync_group")
         if gid:
-            role = "base → ch1/2" if e.get("sync_base") else "angle → ch3/4"
-            tag = f"   ⇄ {gid} ({role})"
+            if e.get("sync_base"):
+                tag = f"   ⇄ {gid} (base → ch1/2)"
+            else:
+                src = e.get("source") or "unknown"
+                ch = sync_angle_channels.get(src)
+                tag = f"   ⇄ {gid} (angle {src} → ch{ch}/{ch+1})" if ch else f"   ⇄ {gid} (angle)"
         elif e.get("external_audio_conformed_path"):
             off = e.get("external_audio_offset_s")
             off_str = f", offset {off:+.3f}s" if off is not None else ""
-            tag = f"   ⇄ ext-audio → ch3{off_str}"
+            src = e.get("external_audio_source") or "audio"
+            ch = audio_channels.get(src)
+            tag = f"   ⇄ ext-audio ({src}) → ch{ch}{off_str}" if ch else f"   ⇄ ext-audio{off_str}"
         print(f"  {i:<4}  {ct:<20}  {e['filename']}{tag}")
     print()
 
@@ -562,9 +634,9 @@ def main():
     n_extaud = sum(1 for e in entries if e.get("external_audio_conformed_path"))
     say(f"{len(entries)} clip(s) will be imported in this order.")
     if n_sync:
-        say(f"{n_sync} synced camera pair(s) will overlap on separate tracks (ch1/2 + ch3/4).")
+        say(f"{n_sync} synced camera pair(s) will overlap on separate tracks.")
     if n_extaud:
-        say(f"{n_extaud} clip(s) with external audio will overlay on ch3 (video keeps its native audio on ch1/2).")
+        say(f"{n_extaud} clip(s) with external audio will overlay on shared per-source channels.")
     print("  Looks good? (y/n): ", end="", flush=True)
     if not input().strip().lower().startswith("y"):
         die("Aborted. Re-run ingest.py / transcode.py to change the order.")

@@ -60,6 +60,38 @@ GAP_THRESHOLD_S = 600  # 10 minutes
 # Source detection
 # ---------------------------------------------------------------------------
 
+ZOOM_FILENAME_RE = re.compile(r"^ZOOM\d", re.IGNORECASE)
+
+
+def detect_audio_source(path: str) -> str:
+    """
+    Classify an external audio file by recorder so import-vse.py can route
+    all strips from the same source onto a shared VSE channel.
+
+    Order: filename pattern (Zoom recorders) → ffprobe handler tag (Apple
+    Voice Memos write 'Core Media Audio' regardless of filename) → file
+    extension as a generic bucket. Pure metadata read; no decoding.
+    """
+    base = os.path.basename(path)
+    if ZOOM_FILENAME_RE.match(base):
+        return "zoom"
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_format", "-show_streams", path],
+            capture_output=True, text=True, timeout=15,
+        )
+        probe = json.loads(result.stdout)
+    except Exception:
+        probe = {}
+    for stream in probe.get("streams", []):
+        handler = (stream.get("tags", {}).get("handler_name") or "").lower()
+        if "core media audio" in handler:
+            return "voice-memo"
+    ext = os.path.splitext(base)[1].lstrip(".").lower()
+    return ext or "audio"
+
+
 def exiftool_make_model(path: str) -> tuple[str | None, str | None]:
     """
     Read Make and Model via exiftool. Returns (make, model), either of which
@@ -1193,6 +1225,9 @@ def main():
         for entry in entries:
             if entry["path"] in audio_pairs:
                 entry["external_audio"] = audio_pairs[entry["path"]]
+                # Classify the recorder so import-vse.py can route every strip
+                # from this source (e.g. every Zoom take) onto a shared channel.
+                entry["external_audio_source"] = detect_audio_source(entry["external_audio"])
         print()
 
     # Optional: sync two camera angles of the same take onto separate tracks.

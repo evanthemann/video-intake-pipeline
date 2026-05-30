@@ -143,9 +143,11 @@ python3 transcode.py          # prompted — supports drag-and-drop
 
 Reads `manifest_transcoded.json`, prompts for project name and resolution, then launches Blender headlessly to create a `.blend` file with all clips placed on the VSE timeline in chronological order. Applies the Video Editing workspace layout and writes `blender_import.log`.
 
-**Synced camera pairs.** A `sync_group` pair is placed as a single chronological slot with the two angles **overlapping on separate tracks**: the base clip lands on channels 1/2 and the second camera on channels 3/4, shifted by the measured `sync_offset_s` so the same moment lines up. Both audio strips are imported active (mix or mute them in Blender). The pair reserves its combined span, after which solo clips resume sequentially.
+**Per-source channel routing.** Every strip from the same recorder or camera lands on a shared VSE channel so per-source mute/solo is one click. The anchor video always claims channels 1/2 (sound + movie). Each unique sync-angle source (the angle's `source` value — `canon`, `iphone`, `obs`, …) is allocated the next channel pair upward, starting at ch3. Each unique external-audio source (`zoom`, `voice-memo`, or a file-extension bucket — set by `ingest.py` from filename pattern + ffprobe handler tag) is allocated a single channel above the highest sync pair. Channels are stable within a project: a second take from the same Zoom H1 lands on the same channel as the first, even if other recorders appear in between.
 
-**External-audio overlays.** A clip with `external_audio_conformed_path` is placed similarly: the video sits on channels 1/2 (with its native audio intact), and the conformed audio WAV sits as a sound strip on channel 3, shifted by `external_audio_offset_s`. Whichever started first anchors the slot at the cursor position — if the camera recorded before the audio, the previous clip butts up to the camera start; if the audio recorded before the video, the previous clip butts up to the audio start. The slot's end is whichever strip ends later.
+**Synced camera pairs.** A `sync_group` pair is placed as a single chronological slot with the two angles **overlapping on separate tracks**: the base clip lands on channels 1/2 and the second camera on its source-assigned pair (e.g. all Canon 7D angles share ch3/4 regardless of how many sync pairs use the 7D), shifted by the measured `sync_offset_s` so the same moment lines up. Both audio strips are imported active (mix or mute them in Blender). The pair reserves its combined span, after which solo clips resume sequentially.
+
+**External-audio overlays.** A clip with `external_audio_conformed_path` is placed similarly: the video sits on channels 1/2 (with its native audio intact), and the conformed audio WAV sits as a sound strip on its source-assigned channel (e.g. every Zoom H1 file on one ch, every Voice Memo on another), shifted by `external_audio_offset_s`. Whichever started first anchors the slot at the cursor position — if the camera recorded before the audio, the previous clip butts up to the camera start; if the audio recorded before the video, the previous clip butts up to the audio start. The slot's end is whichever strip ends later.
 
 ```bash
 python3 import-vse.py /path/to/project_folder
@@ -271,7 +273,6 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
 
 ## Roadmap
 
-- **Group audio strips by source onto shared VSE channels** — instead of each external-audio overlay landing on ch3 independently, route every Zoom H1 strip to one channel, every iPhone Voice Memo strip to another, etc. Same idea for camera-sync angles. Makes per-source mute/solo trivial during editing.
 - **Proxy generation** — re-add `redo_proxies.py` as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender
 - **Subtitles** — auto-generate or import SRT / VTT and burn or soft-attach to the Blender timeline
 - **After Effects export** — convert the VSE timeline to an AE-compatible project file (via ExtendScript or `aescript` bridge) for finishing in After Effects
