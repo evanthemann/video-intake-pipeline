@@ -162,27 +162,45 @@ def fps_to_blender(fps: float) -> tuple[int, float]:
 # Import items (solo clips + synced camera pairs)
 # ---------------------------------------------------------------------------
 
+def camera_routing_key(entry: dict) -> str:
+    """
+    Stable identifier for which VSE lane a clip routes to.
+
+    Prefers camera_model (e.g. "Canon EOS 7D", "Canon VIXIA HF R40", "iPhone
+    16 Pro", "HERO12 Black") so distinct physical cameras get distinct lanes
+    even when they share a brand source. Falls back to source for clips with
+    no exposed model (OBS screen captures, anything else without EXIF
+    Make/Model). Mirrors the same intent everywhere the allocator + display
+    + log need to identify a clip's lane.
+    """
+    return entry.get("camera_model") or entry.get("source") or "unknown"
+
+
 def allocate_track_channels(entries: list[dict]) -> tuple[dict[str, int], dict[str, int]]:
     """
-    Pre-scan the chronological manifest and assign every unique source a
-    stable VSE channel so every clip from the same camera or recorder lands
-    on one shared row in Blender.
+    Pre-scan the chronological manifest and assign every unique camera a
+    stable VSE channel so every clip from the same physical camera or
+    recorder lands on one shared row in Blender.
 
     Returns (camera_channels, audio_channels):
-      - camera_channels[source] = base channel (sound on this ch, movie on +1)
-      - audio_channels[source]  = single channel for external-audio sound strips
+      - camera_channels[key] = base channel (sound on this ch, movie on +1)
+      - audio_channels[src]  = single channel for external-audio sound strips
 
-    Cameras fill channel pairs from ch1 upward in first-seen chronological
-    order — whichever camera shoots first claims ch1/2. External-audio sources
-    fill single channels above the highest camera pair. All video roles
-    (solo, sync base, sync angle, the video side of an external-audio overlay)
-    share the same per-source channel, so muting "all iPhone" mutes every
-    iPhone strip across the project regardless of role.
+    Camera routing keys come from `camera_routing_key` (camera_model when
+    present, else source). Cameras fill channel pairs from ch1 upward in
+    first-seen chronological order — whichever camera shoots first claims
+    ch1/2. External-audio sources fill single channels above the highest
+    camera pair. All video roles (solo, sync base, sync angle, the video
+    side of an external-audio overlay) share the same per-camera channel,
+    so muting "all 7D" mutes every Canon EOS 7D strip across the project
+    regardless of role — and a 7D never collides with a Vixia even though
+    both share `source: "canon"`.
 
-    OBS is special-cased: if any clip is sourced from OBS, OBS is pinned to
-    ch1/2 (the lowest pair) so it always sits visually below the paired
-    camera in a sync pair, regardless of batch order. Screen-capture context
-    almost always wants to be the bottom-anchor lane.
+    OBS is special-cased: if any clip is sourced from OBS, the "obs" key
+    is pinned to ch1/2 (the lowest pair) so it always sits visually below
+    the paired camera in a sync pair, regardless of batch order. OBS clips
+    have no camera_model, so their routing key naturally falls back to
+    "obs" and the pin lines up.
     """
     camera_order: list[str] = []
     audio_order: list[str] = []
@@ -194,15 +212,15 @@ def allocate_track_channels(entries: list[dict]) -> tuple[dict[str, int], dict[s
         camera_order.append("obs")
     for e in entries:
         if e.get("media_type") == "video":
-            src = e.get("source") or "unknown"
-            if src not in camera_order:
-                camera_order.append(src)
+            key = camera_routing_key(e)
+            if key not in camera_order:
+                camera_order.append(key)
         if e.get("external_audio_conformed_path"):
             src = e.get("external_audio_source") or "audio"
             if src not in audio_order:
                 audio_order.append(src)
 
-    camera_channels = {src: 1 + 2 * i for i, src in enumerate(camera_order)}
+    camera_channels = {key: 1 + 2 * i for i, key in enumerate(camera_order)}
     next_free = 1 + 2 * len(camera_order)
     audio_channels = {src: next_free + i for i, src in enumerate(audio_order)}
     return camera_channels, audio_channels
@@ -235,8 +253,8 @@ def build_import_items(entries: list[dict], fps: float) -> list[dict]:
         slot = groups.setdefault(gid, {})
         slot["base" if e.get("sync_base") else "angle"] = e
 
-    def cam_ch(src: str | None) -> int:
-        return camera_channels.get(src or "unknown", 1)
+    def cam_ch(entry: dict) -> int:
+        return camera_channels.get(camera_routing_key(entry), 1)
 
     items: list[dict] = []
     consumed: set[str] = set()
@@ -254,8 +272,8 @@ def build_import_items(entries: list[dict], fps: float) -> list[dict]:
                 "base": base["path"],
                 "angle": angle["path"],
                 "offset_frames": round(offset_s * fps),
-                "base_channel": cam_ch(base.get("source")),
-                "angle_channel": cam_ch(angle.get("source")),
+                "base_channel": cam_ch(base),
+                "angle_channel": cam_ch(angle),
             })
             consumed.add(base["path"])
             consumed.add(angle["path"])
@@ -270,14 +288,14 @@ def build_import_items(entries: list[dict], fps: float) -> list[dict]:
                 "video": path,
                 "audio": e["external_audio_conformed_path"],
                 "offset_frames": round(offset_s * fps),
-                "video_channel": cam_ch(e.get("source")),
+                "video_channel": cam_ch(e),
                 "audio_channel": audio_channels[aud_src],
             })
         else:
             items.append({
                 "kind": "solo",
                 "path": path,
-                "channel": cam_ch(e.get("source")),
+                "channel": cam_ch(e),
             })
     return items
 
@@ -505,8 +523,8 @@ def write_log(project_dir: str, blend_file: str, entries: list[dict],
     ]
     if camera_channels or audio_channels:
         lines.append("channel routing:")
-        for src, ch in camera_channels.items():
-            lines.append(f"  ch{ch}/{ch+1}  {src}")
+        for key, ch in camera_channels.items():
+            lines.append(f"  ch{ch}/{ch+1}  {key}")
         for src, ch in audio_channels.items():
             lines.append(f"  ch{ch}    external audio: {src}")
         lines.append("")
@@ -514,14 +532,14 @@ def write_log(project_dir: str, blend_file: str, entries: list[dict],
     for i, e in enumerate(entries, 1):
         ct = e.get("creation_time") or "no timestamp"
         gid = e.get("sync_group")
-        src = e.get("source") or "unknown"
-        ch = camera_channels.get(src, 1)
+        key = camera_routing_key(e)
+        ch = camera_channels.get(key, 1)
         tag = ""
         if gid:
             role = "base" if e.get("sync_base") else "angle"
             off = e.get("sync_offset_s")
             off_str = f", offset {off:+.3f}s" if (off is not None and role == "angle") else ""
-            tag = f"  [{gid} {role} {src} → ch{ch}/{ch+1}{off_str}]"
+            tag = f"  [{gid} {role} {key} → ch{ch}/{ch+1}{off_str}]"
         elif e.get("external_audio_conformed_path"):
             off = e.get("external_audio_offset_s")
             off_str = f", offset {off:+.3f}s" if off is not None else ""
@@ -529,9 +547,9 @@ def write_log(project_dir: str, blend_file: str, entries: list[dict],
             aud_src = e.get("external_audio_source") or "audio"
             aud_ch = audio_channels.get(aud_src)
             aud_ch_str = f"ch{aud_ch}" if aud_ch else "?"
-            tag = f"  [{src} → ch{ch}/{ch+1}; ext-audio ({aud_src}) → {aud_ch_str}: {aud}{off_str}]"
+            tag = f"  [{key} → ch{ch}/{ch+1}; ext-audio ({aud_src}) → {aud_ch_str}: {aud}{off_str}]"
         else:
-            tag = f"  [{src} → ch{ch}/{ch+1}]"
+            tag = f"  [{key} → ch{ch}/{ch+1}]"
         lines.append(f"  {i:>3}.  {ct}  {e['filename']}{tag}")
 
     with open(log_path, "w", encoding="utf-8") as f:
@@ -638,15 +656,15 @@ def main():
     camera_channels, audio_channels = allocate_track_channels(entries)
 
     if camera_channels or audio_channels:
-        print("  Channel routing (every strip from a given source shares one row):")
-        for src, ch in camera_channels.items():
-            print(f"    ch{ch}/{ch+1}  {src}")
+        print("  Channel routing (every strip from a given camera/recorder shares one row):")
+        for key, ch in camera_channels.items():
+            print(f"    ch{ch}/{ch+1}  {key}")
         for src, ch in audio_channels.items():
             print(f"    ch{ch}    external audio: {src}")
         print()
 
-    def cam_ch(src):
-        return camera_channels.get(src or "unknown", 1)
+    def cam_ch(e):
+        return camera_channels.get(camera_routing_key(e), 1)
 
     print(f"  {'#':<4}  {'DATE/TIME':<20}  FILENAME")
     print(f"  {'-'*4}  {'-'*20}  {'-'*40}")
@@ -654,20 +672,20 @@ def main():
         ct = (e.get("creation_time") or "no timestamp").replace("T", " ").rstrip("Z")
         tag = ""
         gid = e.get("sync_group")
-        src = e.get("source") or "unknown"
-        ch = cam_ch(src)
+        key = camera_routing_key(e)
+        ch = cam_ch(e)
         if gid:
             role = "base" if e.get("sync_base") else "angle"
-            tag = f"   ⇄ {gid} ({role} {src} → ch{ch}/{ch+1})"
+            tag = f"   ⇄ {gid} ({role} {key} → ch{ch}/{ch+1})"
         elif e.get("external_audio_conformed_path"):
             off = e.get("external_audio_offset_s")
             off_str = f", offset {off:+.3f}s" if off is not None else ""
             aud_src = e.get("external_audio_source") or "audio"
             aud_ch = audio_channels.get(aud_src)
-            tag = (f"   ⇄ {src} → ch{ch}/{ch+1}  +  ext-audio ({aud_src}) → ch{aud_ch}{off_str}"
-                   if aud_ch else f"   ⇄ {src} → ch{ch}/{ch+1}  +  ext-audio{off_str}")
+            tag = (f"   ⇄ {key} → ch{ch}/{ch+1}  +  ext-audio ({aud_src}) → ch{aud_ch}{off_str}"
+                   if aud_ch else f"   ⇄ {key} → ch{ch}/{ch+1}  +  ext-audio{off_str}")
         else:
-            tag = f"   → ch{ch}/{ch+1}  ({src})"
+            tag = f"   → ch{ch}/{ch+1}  ({key})"
         print(f"  {i:<4}  {ct:<20}  {e['filename']}{tag}")
     print()
 
