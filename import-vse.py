@@ -178,9 +178,20 @@ def allocate_track_channels(entries: list[dict]) -> tuple[dict[str, int], dict[s
     (solo, sync base, sync angle, the video side of an external-audio overlay)
     share the same per-source channel, so muting "all iPhone" mutes every
     iPhone strip across the project regardless of role.
+
+    OBS is special-cased: if any clip is sourced from OBS, OBS is pinned to
+    ch1/2 (the lowest pair) so it always sits visually below the paired
+    camera in a sync pair, regardless of batch order. Screen-capture context
+    almost always wants to be the bottom-anchor lane.
     """
     camera_order: list[str] = []
     audio_order: list[str] = []
+    has_obs = any(
+        e.get("media_type") == "video" and e.get("source") == "obs"
+        for e in entries
+    )
+    if has_obs:
+        camera_order.append("obs")
     for e in entries:
         if e.get("media_type") == "video":
             src = e.get("source") or "unknown"
