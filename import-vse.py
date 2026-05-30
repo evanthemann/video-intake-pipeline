@@ -202,6 +202,19 @@ def build_import_items(entries: list[dict], fps: float) -> list[dict]:
             })
             consumed.add(base["path"])
             consumed.add(angle["path"])
+        elif e.get("external_audio_conformed_path"):
+            # Overlay: keep the clip's original audio, drop the paired audio
+            # file onto a separate VSE channel aligned with the offset measured
+            # in transcode.py. Video on ch1/2, external audio on ch3.
+            offset_s = e.get("external_audio_offset_s") or 0
+            items.append({
+                "kind": "extaudio",
+                "video": path,
+                "audio": e["external_audio_conformed_path"],
+                "offset_frames": round(offset_s * fps),
+                "video_channel": 1,
+                "audio_channel": 3,
+            })
         else:
             items.append({"kind": "solo", "path": path})
     return items
@@ -253,10 +266,16 @@ with bpy.context.temp_override(
 ):
     def add_strip(file_path, frame_start, channel):
         # movie_strip_add places the SOUND strip on `channel` and the MOVIE
-        # strip on channel+1, so each clip occupies the pair {channel, channel+1}.
-        # Base uses channel=1 -> {1,2}; angle uses channel=3 -> {3,4}; disjoint,
+        # strip on channel+1, so each clip occupies the pair (channel, channel+1).
+        # Base uses channel=1 -> (1,2); angle uses channel=3 -> (3,4); disjoint,
         # no collision. Returns the active strip (same frame range as its pair).
         bpy.ops.sequencer.movie_strip_add(
+            filepath=file_path, frame_start=int(frame_start), channel=channel)
+        return sequence_editor.active_strip
+
+    def add_sound_strip(file_path, frame_start, channel):
+        # sound_strip_add places a single SOUND strip on `channel` (no movie pair).
+        bpy.ops.sequencer.sound_strip_add(
             filepath=file_path, frame_start=int(frame_start), channel=channel)
         return sequence_editor.active_strip
 
@@ -281,6 +300,24 @@ with bpy.context.temp_override(
             base_strip  = add_strip(base_fp,  base_start,  item["base_channel"])
             angle_strip = add_strip(angle_fp, angle_start, item["angle_channel"])
             current_frame = max(base_strip.frame_final_end, angle_strip.frame_final_end)
+            imported += 2
+        elif item["kind"] == "extaudio":
+            video_fp, audio_fp = item["video"], item["audio"]
+            if not (os.path.isfile(video_fp) and os.path.isfile(audio_fp)):
+                print("[%d/%d] SKIPPED extaudio (missing file): %s | %s"
+                      % (idx, total, video_fp, audio_fp), file=sys.stderr)
+                continue
+            off = item["offset_frames"]
+            # offset_frames = audio start relative to video. Whichever started
+            # first anchors the slot; the other is shifted right.
+            video_start = current_frame + (-off if off < 0 else 0)
+            audio_start = current_frame + (off if off > 0 else 0)
+            print("[%d/%d] Importing video+ext-audio: %s (ch%d) + %s (ch%d, offset %+d frames)"
+                  % (idx, total, os.path.basename(video_fp), item["video_channel"],
+                     os.path.basename(audio_fp), item["audio_channel"], off))
+            video_strip = add_strip(video_fp, video_start, item["video_channel"])
+            audio_strip = add_sound_strip(audio_fp, audio_start, item["audio_channel"])
+            current_frame = max(video_strip.frame_final_end, audio_strip.frame_final_end)
             imported += 2
         else:
             file_path = item["path"]
@@ -397,6 +434,11 @@ def write_log(project_dir: str, blend_file: str, entries: list[dict],
                 off = e.get("sync_offset_s")
                 off_str = f", offset {off:+.3f}s" if off is not None else ""
                 tag = f"  [{gid} angle → ch3/4{off_str}]"
+        elif e.get("external_audio_conformed_path"):
+            off = e.get("external_audio_offset_s")
+            off_str = f", offset {off:+.3f}s" if off is not None else ""
+            aud = os.path.basename(e["external_audio_conformed_path"])
+            tag = f"  [ext-audio → ch3: {aud}{off_str}]"
         lines.append(f"  {i:>3}.  {ct}  {e['filename']}{tag}")
 
     with open(log_path, "w", encoding="utf-8") as f:
@@ -509,13 +551,20 @@ def main():
         if gid:
             role = "base → ch1/2" if e.get("sync_base") else "angle → ch3/4"
             tag = f"   ⇄ {gid} ({role})"
+        elif e.get("external_audio_conformed_path"):
+            off = e.get("external_audio_offset_s")
+            off_str = f", offset {off:+.3f}s" if off is not None else ""
+            tag = f"   ⇄ ext-audio → ch3{off_str}"
         print(f"  {i:<4}  {ct:<20}  {e['filename']}{tag}")
     print()
 
     n_sync = sum(1 for e in entries if e.get("sync_group") and e.get("sync_base"))
+    n_extaud = sum(1 for e in entries if e.get("external_audio_conformed_path"))
     say(f"{len(entries)} clip(s) will be imported in this order.")
     if n_sync:
         say(f"{n_sync} synced camera pair(s) will overlap on separate tracks (ch1/2 + ch3/4).")
+    if n_extaud:
+        say(f"{n_extaud} clip(s) with external audio will overlay on ch3 (video keeps its native audio on ch1/2).")
     print("  Looks good? (y/n): ", end="", flush=True)
     if not input().strip().lower().startswith("y"):
         die("Aborted. Re-run ingest.py / transcode.py to change the order.")

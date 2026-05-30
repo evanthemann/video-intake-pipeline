@@ -13,7 +13,7 @@ Raw footage (iPhone · GoPro · Canon · iVue · stills)
 1. ingest.py          — scan folder, extract metadata; optionally pair clips with external audio or sync two camera angles; write manifest
         │
         ▼
-2. transcode.py       — normalize all media to SDR · CFR 29.97 · 16:9 MP4; sync + replace external audio; measure camera-pair offsets
+2. transcode.py       — normalize all media to SDR · CFR 29.97 · 16:9 MP4; conform paired audio + measure offsets (external audio and camera-pairs)
         │
         ▼
 3. import-vse.py      — create Blender project, import clips chronologically; overlap synced camera pairs on separate tracks
@@ -66,7 +66,7 @@ Scans a footage folder recursively, extracts metadata via ffprobe / exiftool, an
 
 **Camera identification.** `source` is a short token used downstream: `iphone`, `gopro`, `obs`, or a vendor brand (`canon`, `sony`, `panasonic`, …) for anything else. iPhones and GoPros come from cheap ffprobe/filename heuristics; OBS screen captures are identified by their default filename pattern (`YYYY-MM-DD HH-MM-SS.mkv`); everything else falls through to an exiftool `Make`/`Model` lookup, so new camera brands work without code changes. `camera_model` carries the full string exposed by the file — e.g. `iPhone 16 Pro`, `HERO12 Black`, `Canon EOS 7D`, `Canon VIXIA HF R40`. Two iPhones of different generations in the same shoot show up distinctly in this field. OBS captures and anything else with no Make/Model leave it as `—` in the report.
 
-**External audio pairing.** After scanning, ingest.py asks whether any video clips have a separate, higher-quality audio file (iPhone Voice Memo, dedicated recorder, etc.). If yes, you drag-and-drop each video clip and its matching audio file. The pairing is written to `manifest.json` as an `external_audio` field — no heavy processing happens at ingest time. The actual sync and audio replacement runs in `transcode.py` (step 2) using `audio-offset-finder` to align the tracks automatically.
+**External audio pairing.** After scanning, ingest.py asks whether any video clips have a separate, higher-quality audio file (iPhone Voice Memo, dedicated recorder, etc.). If yes, you drag-and-drop each video clip and its matching audio file. The pairing is written to `manifest.json` as an `external_audio` field — no heavy processing happens at ingest time. The video clip keeps its native audio; in `transcode.py` (step 2) the paired file is conformed to a sibling WAV, `audio-offset-finder` measures the offset, and in `import-vse.py` (step 3) the conformed audio is dropped onto a separate VSE track aligned with the video.
 
 **Camera-sync pairing.** ingest.py then asks whether any two clips captured the same take from different cameras — e.g. an OBS screen recording (with a good USB mic) plus a Canon 7D angle. You drag-and-drop the **base** clip (its audio anchors the sync, typically OBS) and the **second camera** clip. Both must be scanned project files, and — unlike external audio — **both videos are preserved as separate files**. The pairing is written to `manifest.json` as a shared `sync_group` id with `sync_base` on the base clip. The actual offset measurement happens in `transcode.py` (step 2), and import-vse.py (step 3) overlaps the pair on separate Blender tracks.
 
@@ -110,13 +110,13 @@ Reads `_ingest/manifest.json` and normalizes every file. All output lands in `_i
 | Still image | 6-second slow-zoom MP4: 1s static lead-in + 5s Ken Burns zoom (libx264 · 29.97 fps · 1920×1080) |
 | iPhone HDR video | `avconvert PresetAppleM4V1080pHD` → SDR .m4v, then ffmpeg for VFR/vertical/remux |
 | Other HDR video | ffmpeg zscale tone-map → SDR |
-| VFR video | ffmpeg `-fps_mode cfr` → CFR 29.97 |
+| VFR video, or fps ≠ project rate (e.g. OBS at 30.000) | ffmpeg `-fps_mode cfr` → CFR 29.97 — avoids Blender VSE auto-flipping the scene fps and the 0.1% playback drift that puts video out of sync with audio |
 | Vertical video | ffmpeg blurred 16:9 letterbox (portrait centred on blurred+darkened background) |
 | GoPro / clean video | stream-copy (fast, no re-encode) |
 
 Audio is normalized to **-16 LUFS / -1.5 dBTP** via `loudnorm` on all re-encoded clips.
 
-**External audio replacement.** Clips that have an `external_audio` entry in the manifest (set during ingest) are processed with `audio-offset-finder` to compute the sync offset, then ffmpeg replaces the native audio track with the external file. All standard transforms (HDR→SDR, VFR→CFR, vertical letterbox) still apply alongside the audio swap.
+**External audio overlay.** Clips that have an `external_audio` entry in the manifest (set during ingest) are transcoded normally — the video keeps its native audio. Afterward, the paired audio file is conformed to a sibling WAV next to the transcoded MP4 (`<basename>_extaudio.wav`) at the video's sample rate and channel count; PCM WAV avoids the AAC priming delay and on-the-fly resampling that drift Voice Memo (.m4a) tracks during VSE playback. `audio-offset-finder` then measures the offset between the conformed WAV and the transcoded video, and writes `external_audio_conformed_path` + `external_audio_offset_s` onto the entry. import-vse.py (step 3) reads those and adds the WAV as a sound strip on channel 3, time-aligned with the video on channels 1/2.
 
 **Camera-sync offsets.** For clips tagged with a `sync_group` (set during ingest), both angles are transcoded normally as separate files — nothing is muxed. Afterward, `audio-offset-finder` measures the audio offset between the two transcoded clips and writes `sync_offset_s` onto the second-camera entry. If the measurement fails or scores low, the pair is left at offset 0 with a warning (nudge it in Blender). import-vse.py uses this offset to align the pair on separate tracks.
 
@@ -144,6 +144,8 @@ python3 transcode.py          # prompted — supports drag-and-drop
 Reads `manifest_transcoded.json`, prompts for project name and resolution, then launches Blender headlessly to create a `.blend` file with all clips placed on the VSE timeline in chronological order. Applies the Video Editing workspace layout and writes `blender_import.log`.
 
 **Synced camera pairs.** A `sync_group` pair is placed as a single chronological slot with the two angles **overlapping on separate tracks**: the base clip lands on channels 1/2 and the second camera on channels 3/4, shifted by the measured `sync_offset_s` so the same moment lines up. Both audio strips are imported active (mix or mute them in Blender). The pair reserves its combined span, after which solo clips resume sequentially.
+
+**External-audio overlays.** A clip with `external_audio_conformed_path` is placed similarly: the video sits on channels 1/2 (with its native audio intact), and the conformed audio WAV sits as a sound strip on channel 3, shifted by `external_audio_offset_s`. Whichever started first anchors the slot at the cursor position — if the camera recorded before the audio, the previous clip butts up to the camera start; if the audio recorded before the video, the previous clip butts up to the audio start. The slot's end is whichever strip ends later.
 
 ```bash
 python3 import-vse.py /path/to/project_folder
@@ -268,6 +270,7 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
 
 ## Roadmap
 
+- **Group audio strips by source onto shared VSE channels** — instead of each external-audio overlay landing on ch3 independently, route every Zoom H1 strip to one channel, every iPhone Voice Memo strip to another, etc. Same idea for camera-sync angles. Makes per-source mute/solo trivial during editing.
 - **Proxy generation** — re-add `redo_proxies.py` as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender
 - **Subtitles** — auto-generate or import SRT / VTT and burn or soft-attach to the Blender timeline
 - **After Effects export** — convert the VSE timeline to an AE-compatible project file (via ExtendScript or `aescript` bridge) for finishing in After Effects

@@ -37,10 +37,8 @@ import json
 import math
 import os
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -382,18 +380,17 @@ def compute_sync_offsets(results: list[dict]) -> None:
             warn(f"    low confidence sync (score {score:.1f}) — verify alignment in Blender")
 
 
-def match_external_audio(video_path: str, audio_path: str, ffmpeg_bin: str,
-                         ffprobe_bin: str, tmp_dir: str) -> str:
+def conform_external_audio(video_path: str, audio_path: str, out_wav: str,
+                            ffmpeg_bin: str, ffprobe_bin: str) -> None:
     """
-    Conform an external audio file to the video's audio stream and return the
-    path to a freshly written WAV.
+    Resample/remix an external audio file to match the video's audio stream and
+    write the result as PCM WAV at `out_wav`.
 
-    Probes the video's first audio stream (a:0) for sample rate + channel
-    count, then resamples the external file to match.  Voice Memos records at
-    44100 Hz while GoPro uses 48000 Hz; muxing mismatched rates without
-    resampling lets the external track drift out of sync over the clip, so we
-    align them up front.  Output is PCM WAV regardless of the input format
-    (ffmpeg detects the source by probing, not by extension).
+    Voice Memos records m4a at 44100 Hz, GoPro is 48000 Hz; AAC also carries
+    encoder delay (priming samples) that Blender's audio loader doesn't always
+    compensate for, so the track drifts relative to a synced offset. Conforming
+    to PCM WAV at the video's native rate/channels eliminates both: no priming
+    offset, no playback-time resampling, declared duration matches sample count.
     """
     probe = subprocess.run(
         [ffprobe_bin, "-v", "error", "-select_streams", "a:0",
@@ -401,7 +398,6 @@ def match_external_audio(video_path: str, audio_path: str, ffmpeg_bin: str,
          "-of", "default=noprint_wrappers=1", video_path],
         capture_output=True, text=True, timeout=30,
     )
-    # Parse key=value lines so we don't depend on ffprobe's field ordering.
     fields = {}
     for line in probe.stdout.splitlines():
         key, sep, val = line.partition("=")
@@ -413,138 +409,66 @@ def match_external_audio(video_path: str, audio_path: str, ffmpeg_bin: str,
 
     say(f"    video audio: {codec} {sample_rate} Hz {channels} ch — conforming external file")
 
-    matched = os.path.join(tmp_dir, "audio_matched.wav")
     cmd = [ffmpeg_bin, "-y", "-i", audio_path,
-           "-ar", sample_rate, "-ac", channels, matched]
+           "-ar", sample_rate, "-ac", channels, out_wav]
     result = subprocess.run(cmd, capture_output=True, timeout=600)
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace")
         raise RuntimeError(stderr[-800:] or "ffmpeg audio conform exited non-zero")
-    return matched
 
 
-def transcode_with_external_audio(entry: dict, dst: str, ffmpeg_bin: str,
-                                   avconvert_bin: str, ffprobe_bin: str,
-                                   target_fps: float = 29.97,
-                                   dry_run: bool = False,
-                                   loudnorm: bool = True) -> bool:
+def compute_external_audio_offsets(results: list[dict], output_dir: str,
+                                    ffmpeg_bin: str, ffprobe_bin: str) -> None:
     """
-    Replace a clip's audio with a synced external audio file.
+    For each clip paired with an external audio file at ingest, conform the
+    audio to a sibling WAV next to the transcoded MP4, measure the offset
+    between them, and stamp `external_audio_conformed_path` + `external_audio_offset_s`
+    onto the entry. import-vse.py uses these to drop the audio onto a separate
+    VSE track aligned with the video; the original video keeps its native audio.
 
-    Uses audio-offset-finder to compute the sync offset, then runs ffmpeg with
-    -map 0:v -map 1:a to keep the video track and swap in the external audio.
-    Applies the same HDR/VFR/vertical transforms as transcode_video.
-
-    Offset logic (mirrors merge.sh):
-      offset < 0 → video started first → seek into video by abs(offset)
-      offset >= 0 → audio started first → seek into audio by offset
+    `external_audio_offset_s` follows the same convention as `sync_offset_s`:
+    seconds the audio track starts relative to the video (positive = audio
+    started later; negative = audio started earlier and the video butts up to
+    the audio's start).
     """
-    src        = entry["path"]
-    audio_path = entry["external_audio"]
-    is_hdr     = entry.get("is_hdr", False)
-    is_vfr     = entry.get("is_vfr", False)
-    is_iphone  = entry.get("source") == "iphone"
-    use_avconvert = is_hdr and is_iphone
-    force_cfr  = is_iphone or is_vfr
+    targets = [e for e in results if e.get("external_audio")]
+    if not targets:
+        return
 
-    rotation   = get_rotation(src, ffprobe_bin)
-    is_vertical = rotation in (90, 270)
-    if not is_vertical:
-        is_vertical = entry.get("orientation") == "vertical"
+    for entry in targets:
+        src_audio = entry["external_audio"]
+        video_path = entry["path"]  # already the transcoded MP4
+        stem = os.path.splitext(os.path.basename(video_path))[0]
+        wav_path = os.path.join(output_dir, f"{stem}_extaudio.wav")
 
-    say(f"  video+audio  {os.path.basename(src)}")
-    say(f"               audio: {os.path.basename(audio_path)}")
+        say(f"  ext-audio: {os.path.basename(video_path)}  ←—  {os.path.basename(src_audio)}")
 
-    if dry_run:
-        skip(f"    [dry-run] would conform audio, find offset, then ffmpeg with external audio")
-        return True
+        if os.path.isfile(wav_path):
+            skip(f"    conformed WAV already exists: {os.path.basename(wav_path)}")
+        else:
+            if not os.path.isfile(src_audio):
+                warn(f"    source audio not found: {src_audio} — skipping pair")
+                continue
+            try:
+                conform_external_audio(video_path, src_audio, wav_path,
+                                        ffmpeg_bin, ffprobe_bin)
+            except Exception as e:
+                warn(f"    audio conform failed: {e} — skipping pair")
+                continue
 
-    # Per-clip scratch dir for the conformed audio WAV; removed in finally.
-    tmp_dir    = tempfile.mkdtemp(prefix=f"pipeline_{os.getpid()}_")
-    m4v_tmp    = None
-    try:
-        # Conform the external audio to the video's sample rate + channels
-        # *before* sync/mux, then use the WAV for every downstream step.
         try:
-            audio_path = match_external_audio(src, audio_path, ffmpeg_bin,
-                                              ffprobe_bin, tmp_dir)
+            # Mirrors compute_sync_offsets convention: locate "angle" within "base".
+            # Here the audio plays the angle role, the video the base.
+            offset, score = find_audio_offset(wav_path, video_path)
         except Exception as e:
-            warn(f"    audio conform failed: {e}")
-            return False
+            warn(f"    audio-offset-finder failed: {e} — placing at offset 0")
+            offset, score = 0.0, 0.0
 
-        # Find sync offset (against the conformed WAV)
-        say(f"    analysing audio offset…")
-        try:
-            offset, score = find_audio_offset(src, audio_path)
-        except Exception as e:
-            warn(f"    audio-offset-finder failed: {e}")
-            return False
-
+        entry["external_audio_conformed_path"] = os.path.abspath(wav_path)
+        entry["external_audio_offset_s"] = round(offset, 3)
         say(f"    offset: {offset}s  (score: {score:.1f})")
         if score < 10:
-            warn(f"    low confidence sync (score {score:.1f}) — result may be inaccurate")
-
-        # Step 1: avconvert for iPhone HDR
-        ffmpeg_src = src
-        if use_avconvert:
-            m4v_tmp = dst.replace(".mp4", "_sdr_tmp.m4v")
-            if not avconvert_hdr_to_sdr(src, m4v_tmp, avconvert_bin):
-                return False
-            ffmpeg_src = m4v_tmp
-            is_hdr = False
-
-        vf_str            = build_ffmpeg_filter(is_hdr, is_vertical)
-        use_filter_complex = is_vertical
-        needs_video_work  = is_hdr or force_cfr or is_vertical
-
-        LOUDNORM_FILTER = "loudnorm=I=-16:LRA=11:TP=-1.5"
-        audio_args = ["-c:a", "aac", "-b:a", "192k"]
-        if loudnorm:
-            audio_args += ["-af", LOUDNORM_FILTER]
-
-        # Build inputs — seek into whichever file started later
-        if offset < 0:
-            cmd = [ffmpeg_bin, "-y", "-ss", str(abs(offset)), "-i", ffmpeg_src, "-i", audio_path]
-        else:
-            cmd = [ffmpeg_bin, "-y", "-i", ffmpeg_src, "-ss", str(offset), "-i", audio_path]
-
-        # Map: video from input 0, audio from input 1
-        if use_filter_complex:
-            cmd += ["-filter_complex", vf_str, "-map", "[out]", "-map", "1:a"]
-        else:
-            cmd += ["-map", "0:v", "-map", "1:a"]
-            if vf_str:
-                cmd += ["-vf", vf_str]
-
-        if needs_video_work:
-            cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "fast", "-pix_fmt", "yuv420p"]
-            if force_cfr:
-                cmd += ["-r", "30000/1001", "-fps_mode", "cfr"]
-        else:
-            cmd += ["-c:v", "copy"]
-
-        cmd += audio_args
-        cmd.append(dst)
-
-        try:
-            result = subprocess.run(cmd, capture_output=True, timeout=3600)
-            if result.returncode != 0:
-                stderr = result.stderr.decode(errors="replace")
-                warn(f"  ffmpeg failed for {os.path.basename(ffmpeg_src)}:\n{stderr[-800:]}")
-                return False
-        except subprocess.TimeoutExpired:
-            warn(f"  ffmpeg timed out for {os.path.basename(ffmpeg_src)}")
-            return False
-
-        ok(f"  {os.path.basename(dst)}")
-        return True
-    finally:
-        if m4v_tmp and os.path.isfile(m4v_tmp):
-            try:
-                os.remove(m4v_tmp)
-            except OSError:
-                pass
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+            warn(f"    low confidence sync (score {score:.1f}) — verify alignment in Blender")
 
 
 def transcode_video(entry: dict, dst: str, ffmpeg_bin: str, avconvert_bin: str,
@@ -560,7 +484,11 @@ def transcode_video(entry: dict, dst: str, ffmpeg_bin: str, avconvert_bin: str,
         vertical    → ffmpeg blurred letterbox filtergraph
         none        → ffmpeg stream-copy (fast)
 
-    All iPhone clips are forced to CFR 29.97 regardless of VFR flag.
+    Any clip whose native fps doesn't match target_fps is forced to CFR, in
+    addition to iPhone (always) and VFR clips. This keeps Blender's VSE from
+    flipping the scene fps when an off-rate clip (e.g. OBS at 30.000 vs the
+    project's 29.97) is added, and prevents the 0.1% playback drift that would
+    otherwise put video out of sync with audio.
     Vertical detection reads side_data_list rotation via ffprobe, overriding
     the orientation field in the manifest (which can miss iPhone rotation tags).
     Audio is normalized to -16 LUFS / -1.5 dBTP via loudnorm unless
@@ -579,8 +507,13 @@ def transcode_video(entry: dict, dst: str, ffmpeg_bin: str, avconvert_bin: str,
         # Fall back to manifest orientation if no rotation tag found
         is_vertical = entry.get("orientation") == "vertical"
 
-    # iPhone clips are always forced to CFR 29.97
-    force_cfr = is_iphone or is_vfr
+    # Force CFR when the clip's native fps doesn't match the target — OBS at
+    # 30.000 vs project 29.97 is the common case. Tolerance is small (0.01) so
+    # 30.0 vs 29.97 (diff 0.03) triggers, while 30000/1001 representations
+    # rounded to 29.97 vs target 29.97 (diff 0.0) don't.
+    src_fps = entry.get("fps")
+    fps_mismatch = bool(src_fps) and abs(src_fps - target_fps) > 0.01
+    force_cfr = is_iphone or is_vfr or fps_mismatch
 
     flags = []
     if is_hdr:
@@ -832,8 +765,7 @@ def main():
     ext_audio_v   = [e for e in videos  if e.get("external_audio")]
     sync_v        = [e for e in videos  if e.get("sync_group")]
     passthru      = [e for e in videos  if not e.get("is_hdr") and e.get("source") != "iphone"
-                                           and e.get("orientation") != "vertical"
-                                           and not e.get("external_audio")]
+                                           and e.get("orientation") != "vertical"]
 
     print(f"\n{'='*60}")
     print(f"  TRANSCODE — Video Intake Pipeline")
@@ -848,7 +780,7 @@ def main():
     print(f"             {len(iphone_v)} iPhone video(s) → forced CFR 29.97")
     print(f"             {len(vert_v)} vertical video(s) → 16:9 letterbox (manifest; re-checked per clip)")
     if ext_audio_v:
-        print(f"             {len(ext_audio_v)} clip(s) → audio replaced from external file")
+        print(f"             {len(ext_audio_v)} clip(s) → paired external audio (kept separate; offset measured for VSE overlay)")
     if sync_v:
         print(f"             {len(sync_v)} clip(s) → camera-sync groups (offset measured, kept separate)")
     print(f"             {len(passthru)} GoPro/other video(s) passing through unchanged")
@@ -910,10 +842,7 @@ def main():
                 results.append(output_entry(entry, dst, ffprobe_bin))
                 continue
 
-            if entry.get("external_audio"):
-                success = transcode_with_external_audio(entry, dst, ffmpeg_bin, avconvert_bin, ffprobe_bin, args.fps, args.dry_run, not args.no_loudnorm)
-            else:
-                success = transcode_video(entry, dst, ffmpeg_bin, avconvert_bin, ffprobe_bin, args.fps, args.dry_run, not args.no_loudnorm)
+            success = transcode_video(entry, dst, ffmpeg_bin, avconvert_bin, ffprobe_bin, args.fps, args.dry_run, not args.no_loudnorm)
             if success and not args.dry_run:
                 succeeded += 1
                 results.append(output_entry(entry, dst, ffprobe_bin))
@@ -932,6 +861,10 @@ def main():
     # ── Measure camera-sync offsets (two angles kept as separate files) ──────
     if not args.dry_run and results:
         compute_sync_offsets(results)
+
+    # ── Conform + measure external-audio offsets (paired audio as separate WAV) ──
+    if not args.dry_run and results:
+        compute_external_audio_offsets(results, output_dir, ffmpeg_bin, ffprobe_bin)
 
     # ── Write updated manifest ───────────────────────────────────────────────
     if not args.dry_run and results:

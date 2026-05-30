@@ -896,6 +896,38 @@ def write_ingest_report(entries: list[dict], input_dir: str, output_dir: str,
     if not flags_found:
         a(f"- ✅  No flags — all files look clean")
 
+    # --- Pairings: external audio + camera-sync groups ---
+    ext_audio_clips = [e for e in entries if e.get("external_audio")]
+    sync_clips      = [e for e in entries if e.get("sync_group")]
+    if ext_audio_clips or sync_clips:
+        a(f"")
+        a(f"---")
+        a(f"")
+        a(f"## Pairings  _(downstream sync work scheduled in transcode step)_")
+        a(f"")
+
+        if ext_audio_clips:
+            a(f"**External audio ({len(ext_audio_clips)} clip(s))** — "
+              f"transcode.py will sync and replace each clip's audio with the paired file:")
+            for e in ext_audio_clips:
+                aud = os.path.basename(e["external_audio"])
+                a(f"- `{e['filename']}`  ←audio—  `{aud}`")
+            a(f"")
+
+        if sync_clips:
+            # Group by sync_group id so each pair lists base + angle on one line.
+            by_gid: dict[str, dict] = {}
+            for e in sync_clips:
+                g = by_gid.setdefault(e["sync_group"], {})
+                g["base" if e.get("sync_base") else "angle"] = e["filename"]
+            a(f"**Camera-sync pairs ({len(by_gid)})** — both angles kept as separate "
+              f"clips; transcode.py measures the audio offset, import-vse.py overlaps "
+              f"them on separate Blender tracks:")
+            for gid, members in by_gid.items():
+                base  = members.get("base")  or "(missing base)"
+                angle = members.get("angle") or "(missing angle)"
+                a(f"- `{gid}`:  base `{base}`  ⇄  angle `{angle}`")
+
     a(f"")
     a(f"---")
     a(f"")
