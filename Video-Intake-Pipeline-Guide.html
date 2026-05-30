@@ -182,29 +182,31 @@
 <p><em>Reproduced exactly as it appears in the repository.</em></p>
 
 <h3>Video Intake &amp; Blender VSE Pipeline</h3>
-<p>Automates the journey from raw multi-camera footage (iPhone, GoPro, Canon Vixia / 7D, iVue Rincon, stills) to an edit-ready Blender VSE project. Run the four scripts in order, then do your manual editing in Blender, then use the two marker scripts to prep for and clean up after the Keyboard Maestro cutting macro.</p>
+<p>Automates the journey from raw multi-camera footage (iPhone, GoPro, OBS, Canon Vixia / 7D, iVue Rincon, stills) to an edit-ready Blender VSE project. Run the four scripts in order, then do your manual editing in Blender, then use the two marker scripts to prep for and clean up after the Keyboard Maestro cutting macro.</p>
 
 <h4>Pipeline Overview</h4>
 <pre>
-Raw footage (iPhone · GoPro · Canon · iVue · stills)
+Raw footage (iPhone · GoPro · OBS · Canon · iVue · stills)
         │
         ▼
-1. ingest.py     — scan folder, extract metadata; optionally pair clips
-                   with external audio files; write manifest
+1. ingest.py          — scan folder, extract metadata; optionally pair clips
+                        with external audio or sync two camera angles;
+                        write manifest
         │
         ▼
-2. transcode.py  — normalize all media to SDR · CFR 29.97 · 16:9 MP4;
-                   sync + replace audio for clips paired in step 1
+2. transcode.py       — normalize all media to SDR · CFR 29.97 · 16:9 MP4;
+                        conform paired audio + measure offsets (external
+                        audio and camera-pairs)
         │
         ▼
-3. import-vse.py — create Blender project, import clips in
-                   chronological order
+3. import-vse.py      — create Blender project, import clips chronologically;
+                        overlap synced camera pairs on separate tracks
         │
         ▼
    [ manual editing in Blender — place F / u markers ]
         │
         ▼
-4. vse-validate-markers.py  — validate marker pairs, save _cut.blend,
+4. vse-validate-markers.py   — validate marker pairs, save _cut.blend,
                                print KM loop count
         │
         ▼
@@ -212,7 +214,7 @@ Raw footage (iPhone · GoPro · Canon · iVue · stills)
      blender-km-macros/scripts/trigger.sh N ]
         │
         ▼
-5. vse-remove-markers.py    — wipe all timeline markers, save in place
+5. vse-remove-markers.py     — wipe all timeline markers, save in place
         │
         ▼
    Edit-ready Blender project
@@ -224,10 +226,10 @@ Raw footage (iPhone · GoPro · Canon · iVue · stills)
   <tr><td><code>ffmpeg</code> + <code>ffprobe</code></td><td>transcode, probe metadata</td><td><code>brew install ffmpeg</code></td></tr>
   <tr><td><code>avconvert</code></td><td>iPhone HDR → SDR (macOS only)</td><td>built-in at <code>/usr/bin/avconvert</code></td></tr>
   <tr><td>ImageMagick <code>convert</code> + <code>identify</code></td><td>image padding, dimension reads</td><td><code>brew install imagemagick</code></td></tr>
-  <tr><td><code>exiftool</code></td><td>EXIF orientation + timestamps on images</td><td><code>brew install exiftool</code></td></tr>
+  <tr><td><code>exiftool</code></td><td>EXIF orientation + timestamps on images; camera make/model detection on video</td><td><code>brew install exiftool</code></td></tr>
   <tr><td><code>blender</code></td><td>headless VSE import + marker scripts</td><td>blender.org or <code>brew install --cask blender</code></td></tr>
   <tr><td>Keyboard Maestro</td><td>run the clip-cutting macro (step 4.5) — macOS only</td><td>keyboardmaestro.com · setup in <code>blender-km-macros/</code></td></tr>
-  <tr><td><code>audio-offset-finder</code></td><td>sync external audio to video (optional — only needed if you use external audio files)</td><td><code>pip install audio-offset-finder</code></td></tr>
+  <tr><td><code>audio-offset-finder</code></td><td>sync external audio to video, and align two camera angles (optional — only needed for external audio or camera-sync pairing)</td><td><code>pip install audio-offset-finder</code></td></tr>
 </table>
 <p>Linux Mint: replace <code>avconvert</code> with ffmpeg zscale tone-map (handled automatically). <code>exiftool</code> via <code>sudo apt install libimage-exiftool-perl</code>.</p>
 
@@ -238,13 +240,17 @@ Raw footage (iPhone · GoPro · Canon · iVue · stills)
 <ul>
   <li><code>manifest.json</code> — machine-readable, consumed by transcode.py</li>
   <li><code>clips_ordered.txt</code> — human-readable chronological list</li>
-  <li><code>ingest_report.md</code> — counts, flags (HDR / VFR / vertical / missing timestamps), timeline gaps</li>
+  <li><code>ingest_report.md</code> — counts, flags (HDR / VFR / vertical / missing timestamps / naive-local timestamps normalized to UTC), external-audio + camera-sync pairings, timeline gaps</li>
 </ul>
-<p><strong>What it detects per file:</strong> source (GoPro / iPhone / unknown), media type, orientation, dimensions, duration, FPS, HDR, VFR, creation timestamp.</p>
+<p><strong>What it detects per file:</strong> source, camera model, media type, orientation, dimensions, duration, FPS, HDR, VFR, creation timestamp.</p>
 
-<p><strong>External audio pairing.</strong> After scanning, ingest.py asks whether any video clips have a separate, higher-quality audio file (iPhone Voice Memo, dedicated recorder, etc.). If yes, you drag-and-drop each video clip and its matching audio file. The pairing is written to <code>manifest.json</code> as an <code>external_audio</code> field — no heavy processing happens at ingest time. The actual sync and audio replacement runs in transcode.py (step 2) using <code>audio-offset-finder</code> to align the tracks automatically.</p>
+<p><strong>Camera identification.</strong> <code>source</code> is a short token used downstream: <code>iphone</code>, <code>gopro</code>, <code>obs</code>, or a vendor brand (<code>canon</code>, <code>sony</code>, <code>panasonic</code>, …) for anything else. iPhones and GoPros come from cheap ffprobe/filename heuristics; OBS screen captures are identified by their default filename pattern (<code>YYYY-MM-DD HH-MM-SS.mkv</code>); everything else falls through to an exiftool <code>Make</code>/<code>Model</code> lookup, so new camera brands work without code changes. <code>camera_model</code> carries the full string exposed by the file — e.g. <code>iPhone 16 Pro</code>, <code>HERO12 Black</code>, <code>Canon EOS 7D</code>, <code>Canon VIXIA HF R40</code>. Two iPhones of different generations in the same shoot show up distinctly in this field. OBS captures and anything else with no Make/Model leave it as <code>—</code> in the report.</p>
 
-<p><strong>Timezone normalization.</strong> iPhone and GoPro write <code>creation_time</code> in true UTC. Other cameras — Canon Vixia, Canon 7D, iVue Rincon — write naive <em>local</em> wall-clock time but still label it <code>Z</code>, so left alone they sort hours away from the Apple/GoPro clips. Ingest detects clips with no UTC proof, reads the real local offset from an iPhone/GoPro clip in the same batch (e.g. <code>-0400</code>), and rewrites the naive clips to true UTC so every clip shares one clock. If there is no Apple/GoPro clip in the batch it falls back to this machine's timezone (and warns) — use <code>--local-offset</code> to set it explicitly. Any per-camera embedded timezone tag is deliberately ignored, since it is often misconfigured (the Vixia reports <code>-05:00</code> even when shooting in <code>-04:00</code>). Displayed times in the reports are local wall-clock.</p>
+<p><strong>External audio pairing.</strong> After scanning, ingest.py asks whether any video clips have a separate, higher-quality audio file (iPhone Voice Memo, dedicated recorder, etc.). If yes, you drag-and-drop each video clip and its matching audio file. The pairing is written to <code>manifest.json</code> as an <code>external_audio</code> field — no heavy processing happens at ingest time. The video clip keeps its native audio; in transcode.py (step 2) the paired file is conformed to a sibling WAV, <code>audio-offset-finder</code> measures the offset, and in import-vse.py (step 3) the conformed audio is dropped onto a separate VSE track aligned with the video.</p>
+
+<p><strong>Camera-sync pairing.</strong> ingest.py then asks whether any two clips captured the same take from different cameras — e.g. an OBS screen recording (with a good USB mic) plus a Canon 7D angle. You drag-and-drop the <strong>base</strong> clip (its audio anchors the sync, typically OBS) and the <strong>second camera</strong> clip. Both must be scanned project files, and — unlike external audio — <strong>both videos are preserved as separate files</strong>. The pairing is written to <code>manifest.json</code> as a shared <code>sync_group</code> id with <code>sync_base</code> on the base clip. The actual offset measurement happens in transcode.py (step 2), and import-vse.py (step 3) overlaps the pair on separate Blender tracks.</p>
+
+<p><strong>Timezone normalization.</strong> iPhone and GoPro write <code>creation_time</code> in true UTC. Other cameras — Canon Vixia, Canon 7D, iVue Rincon — write naive <em>local</em> wall-clock time but still label it <code>Z</code>, so left alone they sort hours away from the Apple/GoPro clips. OBS writes no <code>creation_time</code> tag at all, but its default filename template (<code>%CCYY-%MM-%DD %hh-%mm-%ss.mkv</code>) encodes the local start-of-recording time, which ingest parses as another naive-local source. Ingest then reads the real local offset from an iPhone/GoPro clip in the same batch (e.g. <code>-0400</code>) and rewrites all naive clips to true UTC so every clip shares one clock. If there is no Apple/GoPro clip in the batch it falls back to this machine's timezone (and warns) — use <code>--local-offset</code> to set it explicitly. Any per-camera embedded timezone tag is deliberately ignored, since it is often misconfigured (the Vixia reports <code>-05:00</code> even when shooting in <code>-04:00</code>). Displayed times in the reports are local wall-clock.</p>
 
 <pre>
 python3 ingest.py /path/to/footage
@@ -269,13 +275,15 @@ python3 ingest.py          # prompted — supports drag-and-drop
   <tr><td>Still image</td><td>6-second slow-zoom MP4: 1s static lead-in + 5s Ken Burns zoom (libx264 · 29.97 fps · 1920×1080)</td></tr>
   <tr><td>iPhone HDR video</td><td><code>avconvert PresetAppleM4V1080pHD</code> → SDR .m4v, then ffmpeg for VFR/vertical/remux</td></tr>
   <tr><td>Other HDR video</td><td>ffmpeg zscale tone-map → SDR</td></tr>
-  <tr><td>VFR video</td><td>ffmpeg <code>-fps_mode cfr</code> → CFR 29.97</td></tr>
+  <tr><td>VFR video, or fps ≠ project rate (e.g. OBS at 30.000)</td><td>ffmpeg <code>-fps_mode cfr</code> → CFR 29.97 — avoids Blender VSE auto-flipping the scene fps and the 0.1% playback drift that puts video out of sync with audio</td></tr>
   <tr><td>Vertical video</td><td>ffmpeg blurred 16:9 letterbox (portrait centred on blurred+darkened background)</td></tr>
   <tr><td>GoPro / clean video</td><td>stream-copy (fast, no re-encode)</td></tr>
 </table>
 <p>Audio is normalized to <strong>-16 LUFS / -1.5 dBTP</strong> via <code>loudnorm</code> on all re-encoded clips.</p>
 
-<p><strong>External audio replacement.</strong> Clips that have an <code>external_audio</code> entry in the manifest (set during ingest) are processed with <code>audio-offset-finder</code> to compute the sync offset, then ffmpeg replaces the native audio track with the external file. All standard transforms (HDR→SDR, VFR→CFR, vertical letterbox) still apply alongside the audio swap.</p>
+<p><strong>External audio overlay.</strong> Clips that have an <code>external_audio</code> entry in the manifest (set during ingest) are transcoded normally — the video keeps its native audio. Afterward, the paired audio file is conformed to a sibling WAV next to the transcoded MP4 (<code>&lt;basename&gt;_extaudio.wav</code>) at the video's sample rate and channel count; PCM WAV avoids the AAC priming delay and on-the-fly resampling that drift Voice Memo (.m4a) tracks during VSE playback. <code>audio-offset-finder</code> then measures the offset between the conformed WAV and the transcoded video, and writes <code>external_audio_conformed_path</code> + <code>external_audio_offset_s</code> onto the entry. import-vse.py (step 3) reads those and adds the WAV as a sound strip on a separate track, time-aligned with the video.</p>
+
+<p><strong>Camera-sync offsets.</strong> For clips tagged with a <code>sync_group</code> (set during ingest), both angles are transcoded normally as separate files — nothing is muxed. Afterward, <code>audio-offset-finder</code> measures the audio offset between the two transcoded clips and writes <code>sync_offset_s</code> onto the second-camera entry. If the measurement fails or scores low, the pair is left at offset 0 with a warning (nudge it in Blender). import-vse.py uses this offset to align the pair on separate tracks.</p>
 
 <p>On completion writes <code>_ingest/transcoded/manifest_transcoded.json</code> — the input for import-vse.py.</p>
 
@@ -296,6 +304,13 @@ python3 transcode.py          # prompted — supports drag-and-drop
 
 <h3>3 — <code>import-vse.py</code></h3>
 <p>Reads <code>manifest_transcoded.json</code>, prompts for project name and resolution, then launches Blender headlessly to create a <code>.blend</code> file with all clips placed on the VSE timeline in chronological order. Applies the Video Editing workspace layout and writes <code>blender_import.log</code>.</p>
+
+<p><strong>Per-camera channel routing.</strong> Every strip from the same physical camera lands on a shared VSE channel so per-camera mute/solo is one click. The routing key is the entry's <code>camera_model</code> (e.g. <code>Canon EOS 7D</code>, <code>Canon VIXIA HF R40</code>, <code>iPhone 16 Pro</code>, <code>HERO12 Black</code>), falling back to <code>source</code> for clips with no exposed model (OBS, anything without EXIF Make/Model) — so a Canon 7D and a Canon VIXIA never collide on one lane even though both report <code>source: "canon"</code>. Cameras fill channel pairs from ch1 upward in first-seen chronological order; whichever camera shoots first claims ch1/2. OBS is special-cased to always pin to ch1/2 (the bottom row) if any OBS clip is present, regardless of batch order, so the screen capture sits below the paired camera in a sync pair. External-audio sources (<code>zoom</code>, <code>voice-memo</code>, or a file-extension bucket — set by ingest.py from filename pattern + ffprobe handler tag) fill single channels above the highest camera pair. Channels are stable within a project: a second clip from the same camera lands on the same lane as the first, even if other cameras appear in between.</p>
+
+<p><strong>Synced camera pairs.</strong> A <code>sync_group</code> pair is placed as a single chronological slot with the two angles <strong>overlapping on separate tracks</strong>: each clip goes to its own camera's lane (e.g. an OBS+7D pair lands OBS on the OBS lane and 7D on the Canon lane, never colliding because they're different sources). The angle is shifted by the measured <code>sync_offset_s</code> so the same moment lines up. Both audio strips are imported active (mix or mute them in Blender). The pair reserves its combined span, after which solo clips resume sequentially.</p>
+
+<p><strong>External-audio overlays.</strong> A clip with <code>external_audio_conformed_path</code> is placed similarly: the video sits on its camera's lane (with its native audio intact), and the conformed audio WAV sits as a sound strip on its audio-source-assigned channel (e.g. every Zoom H1 file on one ch, every Voice Memo on another), shifted by <code>external_audio_offset_s</code>. Whichever started first anchors the slot at the cursor position — if the camera recorded before the audio, the previous clip butts up to the camera start; if the audio recorded before the video, the previous clip butts up to the audio start. The slot's end is whichever strip ends later.</p>
+
 <pre>
 python3 import-vse.py /path/to/project_folder
 python3 import-vse.py /path/to/project_folder --name my_project
@@ -350,7 +365,8 @@ project_folder/
 │   ├── ingest_report.md
 │   └── transcoded/
 │       ├── manifest_transcoded.json  ← transcode output
-│       └── *.mp4                     ← normalized clips
+│       ├── *.mp4                     ← normalized clips
+│       └── *_extaudio.wav            ← conformed external-audio strips (one per paired clip)
 ├── my_project.blend                ← VSE project
 ├── my_project_cut.blend            ← copy with cuts applied (post-KM)
 └── blender_import.log
@@ -358,11 +374,10 @@ project_folder/
 
 <h4>Typical Full Run</h4>
 <pre>
-# 1. Ingest (answer the audio-pairing prompt if you have Voice Memos)
+# 1. Ingest
 python3 ingest.py ~/footage/trip
 
 # 2. Transcode (can take a while — grab a coffee)
-#    Clips paired with external audio get synced + audio-swapped here
 python3 transcode.py ~/footage/trip
 
 # 3. Import into Blender
@@ -379,21 +394,21 @@ python3 vse-validate-markers.py ~/footage/trip/trip_edit.blend
 # 5. Clean up markers
 python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
 </pre>
+<p>Each script also prints the exact command to run for the next stage when it finishes, threaded with the paths it just produced — so in practice you can also just copy-paste from one script's terminal output into the next.</p>
 
 <h4>Platform Notes</h4>
 <ul>
   <li><strong>macOS</strong> is the primary target. <code>avconvert</code> (iPhone HDR→SDR) is macOS-only; on Linux, the pipeline falls back to ffmpeg's zscale tone-map automatically.</li>
   <li>All scripts support <strong>drag-and-drop</strong> path input when run without arguments — useful in Terminal on macOS.</li>
-  <li>Blender is auto-detected at <code>/Applications/Blender.app</code> (macOS) and <code>/usr/bin/blender</code> (Linux). Pass <code>--blender /path/to/blender</code> to override.</li>
+  <li>Blender is auto-detected on <code>PATH</code> and at common install locations (<code>/Applications/Blender.app</code> on macOS, <code>/usr/bin/blender</code> / <code>/usr/local/bin/blender</code> / <code>~/blender/blender</code> on Linux). Pass <code>--blender /path/to/blender</code> to override.</li>
 </ul>
 
 <h4>Roadmap</h4>
 <ul>
-  <li><strong>Proxy generation</strong> — re-add <code>redo_proxies.py</code> as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender</li>
-  <li><strong>Subtitles</strong> — auto-generate or import SRT / VTT and burn or soft-attach to the Blender timeline</li>
-  <li><strong>After Effects export</strong> — convert the VSE timeline to an AE-compatible project file (via ExtendScript or <code>aescript</code> bridge) for finishing in After Effects</li>
-  <li><strong>External audio format validation</strong> — iPhone Voice Memos are sometimes encoded at a sample rate or bitrate that causes audio drift against 29.97 CFR video; add a pre-sync check that validates the audio file's sample rate and codec before <code>audio-offset-finder</code> runs and warns (or auto-converts) if the format is likely to cause slipping</li>
-  <li><strong>Ebook</strong> — keep this PDF/ebook (Kindle edition) updated as the pipeline evolves</li>
+  <li><strong>Enumerate <code>.blend</code> outputs on each cut run</strong> — vse-validate-markers.py currently writes <code>&lt;name&gt;_cut.blend</code>, overwriting any previous cut from earlier runs of the same project. Suffix subsequent runs with <code>_2</code>, <code>_3</code>, etc. so historical cuts are preserved. Companion change: import-vse.py should suggest <code>&lt;name&gt;_1.blend</code> as the default on creation so the numbering convention is consistent from the project's first .blend onward.</li>
+  <li><strong>Proxy generation</strong> — re-add <code>redo_proxies.py</code> as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender.</li>
+  <li><strong>Subtitles</strong> — auto-generate or import SRT / VTT and burn or soft-attach to the Blender timeline.</li>
+  <li><strong>After Effects export</strong> — convert the VSE timeline to an AE-compatible project file (via ExtendScript or <code>aescript</code> bridge) for finishing in After Effects.</li>
 </ul>
 </div>
 
@@ -401,18 +416,19 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
 <div class="part">
 <h2>Part II - What It Is &amp; Why It Exists</h2>
 
-<p>You shoot an event on whatever is in your hands: an iPhone, a GoPro, an older Canon Vixia camcorder, a Canon 7D, a little iVue Rincon action cam, plus a handful of still photos. You end up with a folder full of clips that disagree with each other on almost everything that matters to an editor:</p>
+<p>You shoot an event on whatever is in your hands: an iPhone, a GoPro, an older Canon Vixia camcorder, a Canon 7D, a little iVue Rincon action cam, an OBS screen recording of something running on the laptop, plus a handful of still photos. You end up with a folder full of clips that disagree with each other on almost everything that matters to an editor:</p>
 
 <ul>
-  <li><strong>They disagree on time.</strong> iPhone and GoPro stamp every clip in true UTC. The Canons and the iVue write <em>local wall-clock</em> time but mislabel it as <code>Z</code> (UTC). Sorted naively, the camcorder clips land hours away from the phone clips, so your timeline is shuffled out of real order.</li>
+  <li><strong>They disagree on time.</strong> iPhone and GoPro stamp every clip in true UTC. The Canons and the iVue write <em>local wall-clock</em> time but mislabel it as <code>Z</code> (UTC). OBS writes no time at all in the file — only in the filename. Sorted naively, the camcorder clips land hours away from the phone clips and OBS clips fall to the very end, so your timeline is shuffled out of real order.</li>
   <li><strong>They disagree on color.</strong> iPhone video is HDR (high dynamic range). Dropped onto an SDR timeline next to GoPro footage it looks washed-out or wrong.</li>
-  <li><strong>They disagree on frame timing.</strong> Phones often record VFR (variable frame rate) to save space; an editor wants CFR (constant frame rate) or playback drifts and audio slips.</li>
+  <li><strong>They disagree on frame timing.</strong> Phones often record VFR (variable frame rate) to save space; OBS records at exactly 30.000 fps (not 29.97); an editor wants CFR at one matching rate or playback drifts and audio slips against the rest of the project.</li>
   <li><strong>They disagree on shape.</strong> A vertical phone clip on a 16:9 timeline leaves ugly black bars, or gets stretched.</li>
   <li><strong>They disagree on being video at all.</strong> Stills are not clips; they have no duration and cannot sit on a video track as-is.</li>
-  <li><strong>They disagree on audio quality.</strong> A clip shot with a camera's built-in mic may have poor audio when a dedicated recorder or iPhone Voice Memo was running nearby — but those two recordings need to be synced and swapped into the video.</li>
+  <li><strong>They disagree on audio quality.</strong> A clip shot with a camera's built-in mic may have poor audio when a dedicated recorder (Zoom H1) or an iPhone Voice Memo was running nearby — those two tracks need to be synced and dropped onto a separate row of the timeline next to the original.</li>
+  <li><strong>They sometimes captured the same moment.</strong> A screen recording (OBS) and a DSLR pointed at you both running during one take are <em>not</em> two consecutive clips — they are two angles of one moment that need to overlap on the timeline, perfectly time-aligned, so you can cut between them.</li>
 </ul>
 
-<p>The Video Intake Pipeline exists to erase every one of those disagreements <em>before</em> you start editing. You point it at the messy folder; it hands back a single Blender Video Sequence Editor (VSE) project where every clip is the same flavor — SDR, constant 29.97 fps, 16:9, normalized audio — laid end to end in <strong>true chronological order</strong>, ready to cut. The goal is simple: <em>spend your energy editing, not wrangling formats.</em></p>
+<p>The Video Intake Pipeline exists to erase every one of those disagreements <em>before</em> you start editing. You point it at the messy folder; it hands back a single Blender Video Sequence Editor (VSE) project where every clip is the same flavor — SDR, constant 29.97 fps, 16:9, normalized audio — laid in <strong>true chronological order</strong>, with each camera routed to its own VSE channel and each paired audio recorder on its own channel above. The goal is simple: <em>spend your energy editing, not wrangling formats.</em></p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ PART III -->
@@ -422,9 +438,11 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
 <p>The pipeline is not one big program. It is <strong>five small command-line tools</strong> that hand work to each other through plain files on disk. Think of it as an assembly line where the conveyor belt is a JSON file.</p>
 
 <pre>
-ingest.py      -->  manifest.json
-transcode.py   -->  manifest_transcoded.json  (+ normalized .mp4 clips)
-import-vse.py  -->  project.blend
+ingest.py      -->  manifest.json (+ clips_ordered.txt, ingest_report.md)
+transcode.py   -->  manifest_transcoded.json  (+ normalized .mp4 clips,
+                                                 + sibling _extaudio.wav
+                                                   for any external-audio pair)
+import-vse.py  -->  project.blend  (+ blender_import.log with channel routing)
                [ you edit in Blender, place F/u markers ]
 vse-validate-markers.py  -->  project_cut.blend  (+ a "loop count")
                [ Keyboard Maestro macro does the cutting ]
@@ -443,6 +461,7 @@ vse-remove-markers.py    -->  clean project_cut.blend
   <li><strong>Headless Blender by code generation.</strong> The three Blender scripts never open a window. They <em>write a small Python program into a temporary file</em>, launch <code>blender --background --python that_file.py</code>, and watch Blender's output for a sentinel line (<code>IMPORT_COMPLETE</code>, <code>VALIDATION_COMPLETE</code>, <code>REMOVE_COMPLETE</code>). Seeing the sentinel is how the wrapper knows the job truly finished, not just that Blender exited.</li>
   <li><strong>Idempotent re-runs.</strong> Transcode skips any clip whose output already exists, so re-running after a crash resumes instead of redoing everything. Ingest prunes its own output folder from the scan so it never re-ingests its own transcoded copies.</li>
   <li><strong>Colored, streaming output.</strong> Helpers like <code>ok()</code>, <code>warn()</code>, <code>skip()</code> print green / yellow / purple status as work happens, and Blender's own log lines are echoed live with a <code>blender |</code> prefix so a long import never looks frozen.</li>
+  <li><strong>Next-step hints on success.</strong> Every script ends by printing the exact command for the next stage, threaded with the paths it just produced — so going from <code>vse-validate-markers.py</code> to the Keyboard Maestro <code>trigger.sh</code> call, or from <code>import-vse.py</code> straight into the <code>open &lt;blend&gt;</code> + validate command, is a copy-paste rather than a recall exercise.</li>
 </ul>
 </div>
 
@@ -454,21 +473,25 @@ vse-remove-markers.py    -->  clean project_cut.blend
 
 <p>Ingest walks the footage folder, inspects every video and image, and writes the manifest plus two human-readable reports. The interesting work is in how it figures things out without trusting any single piece of metadata.</p>
 
-<p><strong>Source detection.</strong> It guesses the camera with a cascade: GoPro filename prefixes (<code>GH</code>, <code>GP</code>, <code>GOPR</code>, <code>GL</code>), then ffprobe tags (an Apple <code>make</code> tag means iPhone; a GoPro encoder/handler means GoPro), then iPhone naming patterns (<code>IMG_1234</code>, screen recordings). Anything unrecognized is simply <code>unknown</code> — it still flows through, it just is not special-cased.</p>
+<p><strong>Source detection.</strong> It guesses the camera with a cascade: GoPro filename prefixes (<code>GH</code>, <code>GP</code>, <code>GOPR</code>, <code>GL</code>); then ffprobe tags (Apple <code>make</code> → iPhone, GoPro encoder/handler → GoPro); then iPhone naming patterns (<code>IMG_1234</code>, screen recordings); then OBS's default filename template (<code>YYYY-MM-DD HH-MM-SS.mkv</code>) → <code>obs</code>; finally, an <code>exiftool</code> <code>Make</code>/<code>Model</code> lookup turns the manufacturer into a short token like <code>canon</code>, <code>sony</code>, <code>panasonic</code>. Anything still unrecognized is <code>unknown</code> — it still flows through, it just is not special-cased.</p>
 
-<p><strong>The timezone fix (the clever part).</strong> This is the pipeline's signature trick. A clip only counts as "really UTC" if it carries proof: an Apple <code>make</code> tag or Apple <code>creationdate</code>, or a GoPro signature. iPhone and GoPro pass; the Canon Vixia, Canon 7D, and iVue Rincon do not — they record local time mislabeled as UTC. Ingest:</p>
+<p><strong>Full camera model.</strong> Alongside <code>source</code>, ingest records a <code>camera_model</code> field — the full device string the file exposes (<code>iPhone 16 Pro</code>, <code>HERO12 Black</code>, <code>Canon EOS 7D</code>, <code>Canon VIXIA HF R40</code>). iPhones expose the model in ffprobe directly, so it's free; everything else uses an <code>exiftool</code> call. This is what downstream stages key off when routing clips to their own VSE channel — a Canon 7D and a Canon VIXIA both report <code>source: "canon"</code>, but their <code>camera_model</code> strings are distinct, so they never collide on one lane.</p>
+
+<p><strong>The timezone fix (the clever part).</strong> This is the pipeline's signature trick. A clip only counts as "really UTC" if it carries proof: an Apple <code>make</code> tag or Apple <code>creationdate</code>, or a GoPro signature. iPhone and GoPro pass; the Canon Vixia, Canon 7D, and iVue Rincon do not — they record local time mislabeled as UTC. OBS writes no <code>creation_time</code> tag at all, but its default filename is literally local wall-clock at start of recording (<code>2026-05-30 10-39-21.mkv</code>), so ingest parses that as the timestamp and treats OBS as another naive-local source. Then it:</p>
 <ol>
   <li>Collects the true UTC offset from any iPhone/GoPro clip in the batch (it reads the offset baked into Apple's <code>creationdate</code>, e.g. <code>-0400</code>, and takes the most common one).</li>
-  <li>Rewrites every "naive-local" clip from that one batch offset into true UTC, so the whole shoot finally shares a single clock.</li>
+  <li>Rewrites every naive-local clip (Vixia, 7D, iVue, OBS) from that one batch offset into true UTC, so the whole shoot finally shares a single clock.</li>
   <li>If there is no iPhone/GoPro clip to learn the offset from, it falls back to <em>this machine's</em> timezone and prints a warning telling you to re-run with <code>--local-offset</code> if the footage was shot elsewhere.</li>
 </ol>
 <p>Crucially it <strong>ignores any timezone tag the camera itself embedded</strong>, because those are routinely wrong (the Vixia happily reports <code>-05:00</code> while shooting in <code>-04:00</code>, which would re-break the order). Trust the phones; correct the rest.</p>
 
-<p><strong>External audio pairing.</strong> After the scan completes, ingest asks whether any video clips have a separate higher-quality audio file — an iPhone Voice Memo, a dedicated recorder, anything with better audio than the camera's built-in mic. If you say yes, it walks you through drag-and-dropping each video clip and its matching audio file one pair at a time. No processing happens at this point; the pairing is simply written into <code>manifest.json</code> as an <code>external_audio</code> field on the relevant clip entry. Transcode.py picks it up in step 2.</p>
+<p><strong>External audio pairing.</strong> After the scan completes, ingest asks whether any video clips have a separate higher-quality audio file — an iPhone Voice Memo, a dedicated recorder, anything with better audio than the camera's built-in mic. If you say yes, it walks you through drag-and-dropping each video clip and its matching audio file one pair at a time. The pairing is written into <code>manifest.json</code> as an <code>external_audio</code> field on the relevant clip entry. Ingest also classifies the recorder so downstream stages know which channel to route it to: filenames matching <code>ZOOM\d</code> → <code>"zoom"</code>; an m4a file with <code>Core Media Audio</code> in its ffprobe handler tag (the iOS encoder signature) → <code>"voice-memo"</code>; otherwise the file extension as a generic bucket. The classification goes onto the manifest as <code>external_audio_source</code>. No heavy processing happens at this point; transcode.py does the sync in step 2.</p>
+
+<p><strong>Camera-sync pairing.</strong> After audio pairing, ingest asks whether any two clips captured the same take from different cameras — typically an OBS screen recording plus a DSLR pointed at you. You drag-and-drop the <strong>base</strong> clip (its audio anchors the sync) and the second-camera clip. Both must be project files already scanned, and — unlike external audio — <strong>both videos are preserved as separate files</strong>. The pair gets a shared <code>sync_group</code> id on the manifest, plus <code>sync_base: true</code> on the base. Transcode.py measures the offset in step 2; import-vse.py overlaps them on separate VSE tracks in step 3.</p>
 
 <p><strong>Other detectives.</strong> Rotation is read from the modern iPhone location — the Display Matrix in the stream's <code>side_data_list</code>, not the legacy <code>rotate</code> tag — and width/height are swapped when a clip is 90/270 degrees so orientation is logical, not pixel-literal. HDR is detected from the color transfer curve (<code>smpte2084</code> for PQ, <code>arib-std-b67</code> / <code>hlg</code> for HLG). VFR is inferred when a clip's average and "real" frame rates disagree by more than half a frame. Stills with no usable ffprobe data fall back to ImageMagick <code>identify</code> for size and <code>exiftool</code> for EXIF orientation and timestamp.</p>
 
-<p><strong>What you get.</strong> <code>manifest.json</code> (the machine contract), <code>clips_ordered.txt</code> (a quick chronological table), and <code>ingest_report.md</code> — a narrative with per-camera counts, total duration, flagged clips (HDR/VFR/vertical/no-timestamp), and any <strong>timeline gap longer than 10 minutes</strong>, which is a handy way to see where one scene ended and the next began.</p>
+<p><strong>What you get.</strong> <code>manifest.json</code> (the machine contract), <code>clips_ordered.txt</code> (a quick chronological table), and <code>ingest_report.md</code> — a narrative with per-camera counts, total duration, flagged clips (HDR/VFR/vertical/no-timestamp/normalized-to-UTC), a Pairings section listing every external-audio and camera-sync pair you set up, and any <strong>timeline gap longer than 10 minutes</strong>, which is a handy way to see where one scene ended and the next began.</p>
 
 <h3>Stage 2 -- transcode.py: make everything agree</h3>
 
@@ -479,23 +502,38 @@ vse-remove-markers.py    -->  clean project_cut.blend
   <li><strong>iPhone HDR uses Apple's own converter.</strong> macOS <code>avconvert</code> with the <code>PresetAppleM4V1080pHD</code> preset does the HDR-to-SDR tone-map (Apple knows its own color science best), then ffmpeg handles any leftover VFR-to-CFR or vertical-to-16:9 work. iPhone clips are <em>always</em> forced to CFR 29.97.</li>
   <li><strong>Non-Apple HDR uses an ffmpeg tone-map</strong> — a <code>zscale -&gt; tonemap=hable -&gt; zscale</code> chain that linearizes, maps highlights with the Hable curve, and lands back in bt709 SDR. (On Linux, where there is no <code>avconvert</code>, <em>all</em> HDR takes this path.)</li>
   <li><strong>Vertical clips get a blurred 16:9 letterbox.</strong> The clip is split into two copies; one is scaled up to fill 1920x1080, heavily Gaussian-blurred (<code>gblur=sigma=120</code>) and darkened to make a soft background; the original portrait is centered on top. Far nicer than black bars.</li>
-  <li><strong>Clean GoPro / other clips are stream-copied</strong> — no re-encode, so they are fast and lossless to pass through.</li>
-  <li><strong>Clips with external audio get synced and swapped.</strong> When a manifest entry has an <code>external_audio</code> field (set during ingest), transcode runs <code>audio-offset-finder</code> to measure the time offset between the clip's native audio and the external file, then uses ffmpeg to replace the native audio track with the synced external recording. All other transforms (HDR, VFR, vertical) still apply. A confidence score is printed; a score below 10 triggers a warning that the sync may be inaccurate.</li>
+  <li><strong>Off-rate clips are forced to CFR 29.97.</strong> The big offender is OBS at 30.000 fps (not 29.97). Left alone, Blender's VSE would flip the scene fps when the OBS clip was added — and then back when the next 29.97 clip arrived — and OBS would play at a 0.1% slowdown that puts its video out of sync with any paired audio over the length of the clip. The fix is to re-encode any clip whose native fps differs from the project target (0.01 tolerance covers <code>30000/1001</code> jitter) through ffmpeg with <code>-r 30000/1001 -fps_mode cfr</code>. Same path that handles VFR phones.</li>
+  <li><strong>Clean clips at the target rate are stream-copied</strong> — GoPro at 29.97, 7D at 29.97, Vixia at 29.97 all pass through untouched, fast and lossless.</li>
 </ul>
 
-<p>Re-encoded video uses CRF 18 (visually lossless) at the <code>fast</code> preset. After each file, transcode re-probes the <em>output</em> to record its true dimensions and clear the HDR/VFR flags, then writes <code>manifest_transcoded.json</code>. Because it skips any output that already exists, the step is safe to re-run.</p>
+<p>Re-encoded video uses CRF 18 (visually lossless) at the <code>fast</code> preset. After each file, transcode re-probes the <em>output</em> to record its true dimensions and clear the HDR/VFR flags. Because it skips any output that already exists, the step is safe to re-run.</p>
+
+<p><strong>External audio overlay.</strong> When a manifest entry has an <code>external_audio</code> field, the video is transcoded normally — its native audio is kept. After all the videos are done, a second pass conforms the paired audio file to a sibling WAV next to the transcoded MP4 (<code>&lt;basename&gt;_extaudio.wav</code>), resampled and remixed to match the video's sample rate and channel count. PCM WAV is the on-disk format on purpose: AAC m4a (which Voice Memos write) carries encoder-delay priming samples that Blender's audio loader doesn't compensate for, and Blender's on-the-fly resampling between 44.1 kHz and 48 kHz can accumulate drift over a long clip — both make the synced audio gradually slip against the video. WAV at the video's native rate has no priming offset and no playback-time resampling, so the offset <code>audio-offset-finder</code> measures is the offset Blender will actually play. The measured offset and the WAV path are written onto the manifest entry as <code>external_audio_offset_s</code> and <code>external_audio_conformed_path</code>; import-vse.py uses them in step 3 to drop the WAV onto its own VSE row.</p>
+
+<p><strong>Camera-sync offsets.</strong> When two clips share a <code>sync_group</code>, both are transcoded normally as separate files — nothing is muxed. Then <code>audio-offset-finder</code> compares the two transcoded clips' audio to find how far the second-camera clip lags or leads the base, and writes the result as <code>sync_offset_s</code> on the second-camera entry. A confidence score is printed; a score below 10 triggers a warning. If the measurement fails entirely the pair is left at offset 0 with a warning, so you can nudge it manually in Blender. Import-vse.py reads the offset and overlaps the pair on separate tracks in step 3.</p>
+
+<p>On completion transcode writes <code>manifest_transcoded.json</code> — the input for import-vse.py.</p>
 
 <h3>Stage 3 -- import-vse.py: build the Blender project</h3>
 
-<p>This stage turns the normalized clips into an actual <code>.blend</code>. It detects the frame rate from the first clip, asks you for a project name and resolution (1080p or 4K), shows you the import order for confirmation, then <strong>generates a Blender Python script</strong> and runs it headlessly.</p>
+<p>This stage turns the normalized clips into an actual <code>.blend</code>. It detects the frame rate from the first clip, asks you for a project name and resolution (1080p or 4K), shows you the import order for confirmation — including the channel each clip will land on — then <strong>generates a Blender Python script</strong> and runs it headlessly.</p>
 
-<p>Inside Blender, the generated script sets the scene resolution and fps, finds or creates a Sequence Editor area, and adds each clip with <code>movie_strip_add</code> at the current playhead — then advances the playhead to that strip's end, so clips land back-to-back in order with no manual math. It selects all strips, loads Blender's built-in <strong>Video Editing</strong> workspace so the file opens with the right layout, saves the <code>.blend</code>, and prints <code>IMPORT_COMPLETE</code>. A <code>blender_import.log</code> records exactly what was placed and when.</p>
+<p><strong>Per-camera channel routing.</strong> Before any strip is placed, a pre-scan walks the manifest in chronological order and assigns every unique camera a VSE channel pair, every unique audio recorder a single channel. The routing key is <code>camera_model</code> when present (so iPhone 16 Pro and iPhone 14 get different lanes, and Canon EOS 7D never collides with Canon VIXIA HF R40 even though both share <code>source: "canon"</code>), falling back to <code>source</code> for clips with no exposed model. Lanes fill from ch1 upward — whichever camera shoots first claims ch1/2 — with one exception: <strong>OBS is pre-seeded</strong> so it always lands on ch1/2 regardless of when its first clip appears, which means in a sync pair the screen capture sits visually below the paired camera every time. External-audio sources (<code>zoom</code>, <code>voice-memo</code>, file-extension buckets) get single channels stacked above the highest camera pair. The result is that muting "all iPhone footage" or "all Zoom audio" in Blender is a single click on the channel header.</p>
+
+<p>Inside the generated Blender script, each item is placed at the current playhead and the playhead advances by the slot's length. Three kinds of slots:</p>
+<ul>
+  <li><strong>Solo clip</strong> — a normal <code>movie_strip_add</code> on the clip's camera lane.</li>
+  <li><strong>Sync pair</strong> (a <code>sync_group</code>) — both clips placed at the same chronological slot, each on its own camera lane, with the second-camera clip shifted by <code>sync_offset_s</code> so the matching moment lines up. Whichever started recording first anchors the slot at the playhead; the other sits to the right of it. The playhead advances to whichever ends last.</li>
+  <li><strong>External-audio overlay</strong> — the video goes on its camera lane (keeping its native audio); the conformed WAV goes on the audio recorder's single channel, shifted by <code>external_audio_offset_s</code>. Same anchor-by-earlier / advance-to-later rule as a sync pair.</li>
+</ul>
+
+<p>After every clip is placed, the script sets <code>scene.frame_end</code> to the last frame of the last strip (so the playable range matches the imported content instead of Blender's default 250), runs <code>view_all</code> on the sequencer so the whole timeline is zoom-fit when you open the file, then loads Blender's built-in <strong>Video Editing</strong> workspace and saves. A <code>blender_import.log</code> records the channel routing legend and exactly what landed where. The script ends by printing the next-step command — opening the .blend and running <code>vse-validate-markers.py</code> against it.</p>
 
 <h3>Stage 4 -- vse-validate-markers.py: check your cut plan</h3>
 
 <p>After you edit in Blender, you mark the ranges to <strong>keep</strong> with timeline markers following one convention: the start of a keep-range is named <code>F1</code>, <code>F2</code>, … and its end is named exactly <code>u</code>. Each <code>F.. -&gt; u</code> pair is one segment to retain.</p>
 
-<p>Validation opens the file headlessly, sorts the markers by frame, and checks: the count is even (every start has an end), the names alternate <code>F..</code> then <code>u</code>, and no two keep-ranges overlap (a pairwise comparison). If anything is wrong it lists every problem and exits without touching your file. If everything is clean it saves a <code>_cut.blend</code> copy and prints the <strong>loop count</strong> for the Keyboard Maestro macro — which is <code>pairs - 1</code>, the number of unwanted gaps <em>between</em> your kept segments that the macro will delete.</p>
+<p>Validation opens the file headlessly, sorts the markers by frame, and checks: the count is even (every start has an end), the names alternate <code>F..</code> then <code>u</code>, and no two keep-ranges overlap (a pairwise comparison). If anything is wrong it lists every problem and exits without touching your file. If everything is clean it saves a <code>_cut.blend</code> copy and prints the <strong>loop count</strong> for the Keyboard Maestro macro — which is <code>pairs - 1</code>, the number of unwanted gaps <em>between</em> your kept segments that the macro will delete. The wrapper script captures both the loop count and the <code>_cut.blend</code> path from Blender's output, so the next-step hint at the end of the run is the fully-resolved <code>trigger.sh &lt;N&gt;</code> command plus the <code>vse-remove-markers.py</code> command that follows — both copy-paste ready.</p>
 
 <h3>Stage 4.5 -- the Keyboard Maestro macro: do the cutting</h3>
 
@@ -523,8 +561,13 @@ vse-remove-markers.py    -->  clean project_cut.blend
   <li><p><strong>The manifest is a contract, and you can edit it.</strong> Because stages talk through <code>manifest.json</code>, you can open it and delete a clip, fix a timestamp, or reorder by hand, and the rest of the pipeline obeys. The format is the API.</p></li>
   <li><p><strong>Generated Blender scripts plus a sentinel string.</strong> Rather than fight Blender's Python console, each Blender stage writes a one-shot script to a temp file and watches stdout for a unique "I finished" line. It is a simple, robust way to drive a giant GUI app from a tiny CLI wrapper, and the same trick appears three times.</p></li>
   <li><p><strong>Trust phones, correct camcorders.</strong> The timezone normalization deliberately distrusts camera-embedded timezone tags and instead anchors the whole batch to an iPhone/GoPro clock. The most recent relevant commit in the repo is: <em>"ingest: normalize naive-local camera timestamps to UTC."</em></p></li>
-  <li><p><strong>Ingest records intent, transcode does work.</strong> The external audio pairing is a deliberate split: ingest is fast (metadata only), so asking about audio pairs there costs nothing. The heavy lifting — running <code>audio-offset-finder</code> and re-encoding with ffmpeg — belongs in transcode, which already owns the slow per-file processing loop. The manifest <code>external_audio</code> field is the handoff.</p></li>
-  <li><p><strong>Idempotency as a habit.</strong> Skipping existing outputs and pruning the output folder from scans both come from the same instinct: re-running should be cheap and safe, never destructive.</p></li>
+  <li><p><strong>Ingest records intent, transcode does work.</strong> The external audio pairing and the camera-sync pairing are both deliberate splits: ingest is fast (metadata only), so asking about pairings there costs nothing. The heavy lifting — running <code>audio-offset-finder</code>, conforming audio to WAV, re-encoding video with ffmpeg — belongs in transcode, which already owns the slow per-file processing loop. The manifest fields (<code>external_audio</code>, <code>sync_group</code>) are the handoff.</p></li>
+  <li><p><strong>Overlay, not replace, for external audio.</strong> Early versions of the pipeline muxed the paired audio into the video clip, replacing its native audio track. The current version keeps the native audio on the clip and drops the paired file onto its own VSE row — same shape as a sync pair, just with a sound strip instead of a second movie strip. This makes mute/solo decisions an editing choice rather than a baked-in one, and it means the paired audio gets the same per-source channel routing as everything else (every Zoom take on one row, every Voice Memo on another).</p></li>
+  <li><p><strong>Conform to PCM WAV before any Blender sees it.</strong> AAC m4a (what Voice Memos writes) carries encoder-delay priming samples that Blender's audio loader doesn't compensate for, and Blender's on-the-fly resampling between 44.1 kHz and 48 kHz can slowly drift. Conforming the paired audio to WAV at the video's native sample rate, up front in transcode, eliminates both — the offset <code>audio-offset-finder</code> measures is the offset Blender actually plays back. It's the kind of bug that looks like "Voice Memos always slips" until you understand the format details.</p></li>
+  <li><p><strong>Per-camera channel routing keyed on the model, not the brand.</strong> The natural editor-friendly grouping is "all iPhone footage on one row, all GoPro on another," so mute/solo is a single click. The first version of this routed on <code>source</code> (brand-only), which collapsed Canon EOS 7D and Canon VIXIA HF R40 onto the same lane. The current version keys on <code>camera_model</code> (with <code>source</code> as the fallback for screen captures and anything else without EXIF Make/Model), which is the right granularity: different physical cameras get different lanes, but two clips from the same camera always share one.</p></li>
+  <li><p><strong>OBS pinned to the bottom.</strong> Channel allocation is otherwise pure first-seen chronological order, but OBS is pre-seeded into the channel map so it always claims ch1/2 whenever any OBS clip exists. Reason: in a sync pair, the user always wants the screen capture below the camera angle, regardless of when the OBS clip happened to fall in the batch. It's the only camera-source-specific rule in the allocator; other "primary screen-capture" tools could be folded into the same rule if they ever appeared.</p></li>
+  <li><p><strong>Force CFR re-encode when the rate doesn't match.</strong> Stream-copy is fast, but it preserves the source frame rate verbatim. OBS records at exactly 30.000 fps, the project rate is 29.97 — and dropping the OBS clip into the VSE would cause Blender to auto-flip the scene fps (and back) and the OBS video to play at 0.1% slowdown, drifting out of sync with paired audio over the length of the clip. The fix: any clip whose source fps deviates from the target (with 0.01 tolerance for <code>30000/1001</code> jitter) takes the CFR re-encode path. Clean clips at the target rate keep stream-copying.</p></li>
+  <li><p><strong>Idempotency as a habit.</strong> Skipping existing outputs and pruning the output folder from scans both come from the same instinct: re-running should be cheap and safe, never destructive. The conform-to-WAV pass skips its own <code>_extaudio.wav</code> if it already exists, too.</p></li>
   <li><p><strong>Loudness target of -16 LUFS / -1.5 dBTP.</strong> A sensible web/streaming loudness with about 1.5 dB of true-peak headroom, so mixed-source audio sits at a consistent level instead of lurching between a quiet camcorder and a loud phone.</p></li>
   <li><p><strong>A quirk preserved in the macro docs.</strong> Keyboard Maestro's Repeat count must be the <em>bare</em> variable name <code>BlenderDeleteCount</code> (no percent signs), because that field is a calculation, not text. The README calls this out because it trips people up every time.</p></li>
   <li><p><strong>Two repos became one, with history.</strong> The Keyboard Maestro tool started life as its own 8-commit git repository. It was folded into this repo with <code>git subtree</code> so all eight of its original commits are preserved in the combined history — not flattened away — and it now reads as pipeline "step 4.5".</p></li>
@@ -535,26 +578,28 @@ vse-remove-markers.py    -->  clean project_cut.blend
 <div class="part">
 <h2>Part VI - How to Use It: Full Walkthrough</h2>
 
-<p><strong>Install the dependencies</strong> (macOS): <code>brew install ffmpeg imagemagick exiftool</code>, install Blender, and install Keyboard Maestro for the cutting step. <code>avconvert</code> is already built into macOS. If you plan to use external audio files: <code>pip install audio-offset-finder</code>.</p>
+<p><strong>Install the dependencies</strong> (macOS): <code>brew install ffmpeg imagemagick exiftool</code>, install Blender, and install Keyboard Maestro for the cutting step. <code>avconvert</code> is already built into macOS. If you plan to use external audio files or camera-sync pairs: <code>pip install audio-offset-finder</code>.</p>
 
 <p><strong>1. Ingest.</strong> Scan the footage and read the report:</p>
 <pre>python3 ingest.py ~/footage/trip</pre>
-<p>The script scans and reports. Then it asks:</p>
+<p>The script scans and reports, then asks two questions in sequence. First:</p>
 <pre>Any of these clips have a separate external audio file? [y/N]:</pre>
-<p>If you recorded a Voice Memo or used a separate recorder alongside any clip, answer <code>y</code> and drag-and-drop each video + audio file pair when prompted. Otherwise press Return to skip. Open <code>~/footage/trip/_ingest/ingest_report.md</code> and skim the flags. If a camera with no phone clip in the batch got the wrong time, re-run with the real offset:</p>
+<p>If you recorded a Voice Memo or used a separate recorder alongside any clip, answer <code>y</code> and drag-and-drop each video + audio file pair when prompted.</p>
+<pre>Any clips from two cameras recording the same take, to sync onto separate tracks? [y/N]:</pre>
+<p>If you captured one take from two cameras simultaneously (typically an OBS screen recording plus a DSLR angle), answer <code>y</code> and drag-and-drop the base clip (whose audio anchors the sync) followed by the second-camera clip. Otherwise press Return to skip either prompt. Open <code>~/footage/trip/_ingest/ingest_report.md</code> and skim the flags, the Pairings section, and the timeline gaps. If a camera with no phone clip in the batch got the wrong time, re-run with the real offset:</p>
 <pre>python3 ingest.py ~/footage/trip --local-offset -04:00</pre>
 
 <p><strong>2. Transcode.</strong> Normalize everything (this is the slow step):</p>
 <pre>python3 transcode.py ~/footage/trip</pre>
-<p>Clips with paired external audio are synced and audio-swapped here automatically. Use <code>--dry-run</code> first if you want to see the plan, or <code>--no-loudnorm</code> to skip audio leveling.</p>
+<p>Videos are normalized to SDR/CFR/16:9 MP4. After all the videos finish, any paired external audio is conformed to a sibling WAV and its offset measured; any camera-sync pair has its offset measured the same way. Use <code>--dry-run</code> first if you want to see the plan, or <code>--no-loudnorm</code> to skip audio leveling. The script ends by printing the next command — the <code>import-vse.py</code> invocation with the project path threaded in.</p>
 
 <p><strong>3. Import into Blender.</strong> Build the project:</p>
 <pre>python3 import-vse.py ~/footage/trip --name trip_edit</pre>
-<p>Pick a resolution, confirm the clip order, and let Blender build <code>trip_edit.blend</code>.</p>
+<p>Pick a resolution; the script shows you the per-camera channel routing legend and the clip order before it builds anything. Confirm and let Blender create <code>trip_edit.blend</code>. The output ends with the next command — opening the .blend and validating it.</p>
 
 <p><strong>4. Edit and mark.</strong> Open the <code>.blend</code>, do your rough edit, and place <code>F1…/u</code> marker pairs around every range you want to keep. Then validate:</p>
 <pre>python3 vse-validate-markers.py ~/footage/trip/trip_edit.blend</pre>
-<p>Note the printed <strong>loop count</strong> and the new <code>trip_edit_cut.blend</code>.</p>
+<p>The next-step block shows you the fully-resolved <code>trigger.sh &lt;N&gt;</code> command (with the loop count filled in) plus the <code>vse-remove-markers.py</code> command that follows.</p>
 
 <p><strong>4.5. Cut.</strong> With Blender open and the mouse hovering over the VSE timeline, run the macro with that loop count:</p>
 <pre>./blender-km-macros/scripts/trigger.sh &lt;loop-count&gt;</pre>
@@ -567,10 +612,11 @@ vse-remove-markers.py    -->  clean project_cut.blend
 <h3>Troubleshooting quick hits</h3>
 <ul>
   <li><em>Clips out of order by hours</em> — a camcorder's time was not corrected; re-run ingest with <code>--local-offset</code>.</li>
-  <li><em>A file sorted to the very end</em> — it had no timestamp metadata; the report flags these.</li>
+  <li><em>A file sorted to the very end</em> — it had no timestamp metadata; the report flags these. OBS clips with the default <code>YYYY-MM-DD HH-MM-SS.mkv</code> filename are handled automatically; if your OBS template is custom, the filename-based time recovery won't fire.</li>
   <li><em>Import found no manifest</em> — you skipped a step; run ingest then transcode first.</li>
   <li><em>Macro does nothing</em> — Blender must be running and the mouse must be over the timeline; <code>trigger.sh</code> will warn if Blender is closed.</li>
-  <li><em>Audio sync looks off</em> — check the standard_score printed during transcode; a score below 10 means low confidence. iPhone Voice Memos in particular can have sample-rate quirks that cause drift — a future validation step is on the roadmap.</li>
+  <li><em>External audio sync looks off in Blender</em> — check the standard_score printed during transcode; a score below 10 means low confidence and the pair is left at offset 0 for manual nudging. The conform-to-WAV step handles the AAC priming and resample drift that used to plague Voice Memo overlays.</li>
+  <li><em>Two cameras from the same brand sharing a row</em> — the routing key is <code>camera_model</code>, so a clip with no model exposed (some screen-capture tools, generic encoders) falls back to <code>source</code> and may share with another brandmate. Check the channel-routing legend printed at import time.</li>
 </ul>
 </div>
 
@@ -590,7 +636,12 @@ vse-remove-markers.py    -->  clean project_cut.blend
   <li><strong>zscale / tonemap (Hable)</strong> -- the ffmpeg color tools used for non-Apple HDR-to-SDR conversion; "Hable" is a filmic highlight-rolloff curve.</li>
   <li><strong>letterbox</strong> -- fitting non-16:9 content onto a 16:9 frame; here a blurred copy of the clip fills the sides instead of black bars.</li>
   <li><strong>audio-offset-finder</strong> -- the Python tool (<code>pip install audio-offset-finder</code>) that compares two audio tracks and returns the time offset between them, used to sync external audio recordings to their matching video clips.</li>
-  <li><strong>external_audio</strong> -- a field written into <code>manifest.json</code> by ingest when you pair a video clip with a separate audio file; transcode reads it to know which clips need audio replacement.</li>
+  <li><strong>external_audio</strong> -- a field written into <code>manifest.json</code> by ingest when you pair a video clip with a separate audio file; transcode reads it to know which clips need an audio sibling WAV conformed and an offset measured.</li>
+  <li><strong>external_audio_source</strong> -- the recorder classification ingest assigns to a paired audio file (<code>zoom</code>, <code>voice-memo</code>, or a file-extension bucket). Drives which VSE channel the audio strip lands on.</li>
+  <li><strong>sync_group</strong> -- a shared id ingest writes on two manifest entries that captured the same take from different cameras (e.g. OBS + DSLR). One member also gets <code>sync_base: true</code>; transcode measures the audio offset between the pair and writes <code>sync_offset_s</code> onto the other.</li>
+  <li><strong>camera_model</strong> -- the full device string each clip exposes (<code>Canon EOS 7D</code>, <code>iPhone 16 Pro</code>, <code>HERO12 Black</code>). Read from ffprobe directly for iPhones, from exiftool for everything else. It's the primary routing key for per-camera VSE channel allocation.</li>
+  <li><strong>per-camera channel routing</strong> -- import-vse's allocation rule: every unique <code>camera_model</code> (with <code>source</code> as fallback) gets its own VSE channel pair, every unique <code>external_audio_source</code> gets a single channel above the highest camera pair, OBS is pinned to ch1/2. Result: muting one camera or one recorder is a single click.</li>
+  <li><strong>conform</strong> -- transcode's step of resampling a paired audio file to a sibling PCM WAV at the video's native sample rate and channel count. Eliminates AAC priming delay and on-the-fly playback resampling that would otherwise drift the synced audio.</li>
   <li><strong>manifest</strong> -- the JSON file describing every clip; the contract between stages.</li>
   <li><strong>idempotent</strong> -- safe to run again: re-running skips work already done.</li>
   <li><strong>headless / --background</strong> -- running Blender with no window, driven entirely by a script.</li>
