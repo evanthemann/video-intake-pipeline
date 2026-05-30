@@ -1,13 +1,13 @@
 # Video Intake & Blender VSE Pipeline
 
-Automates the journey from raw multi-camera footage (iPhone, GoPro, Canon Vixia / 7D, iVue Rincon, stills) to an edit-ready Blender VSE project. Run the four scripts in order, then do your manual editing in Blender, then use the two marker scripts to prep for and clean up after the Keyboard Maestro cutting macro.
+Automates the journey from raw multi-camera footage (iPhone, GoPro, OBS, Canon Vixia / 7D, iVue Rincon, stills) to an edit-ready Blender VSE project. Run the four scripts in order, then do your manual editing in Blender, then use the two marker scripts to prep for and clean up after the Keyboard Maestro cutting macro.
 
 ---
 
 ## Pipeline Overview
 
 ```
-Raw footage (iPhone · GoPro · Canon · iVue · stills)
+Raw footage (iPhone · GoPro · OBS · Canon · iVue · stills)
         │
         ▼
 1. ingest.py          — scan folder, extract metadata; optionally pair clips with external audio or sync two camera angles; write manifest
@@ -60,7 +60,7 @@ Scans a footage folder recursively, extracts metadata via ffprobe / exiftool, an
 
 - `manifest.json` — machine-readable, consumed by transcode.py
 - `clips_ordered.txt` — human-readable chronological list
-- `ingest_report.md` — counts, flags (HDR / VFR / vertical / missing timestamps), timeline gaps
+- `ingest_report.md` — counts, flags (HDR / VFR / vertical / missing timestamps / naive-local timestamps normalized to UTC), external-audio + camera-sync pairings, timeline gaps
 
 **What it detects per file:** source, camera model, media type, orientation, dimensions, duration, FPS, HDR, VFR, creation timestamp.
 
@@ -226,7 +226,8 @@ project_folder/
 │   ├── ingest_report.md
 │   └── transcoded/
 │       ├── manifest_transcoded.json  ← transcode output
-│       └── *.mp4                     ← normalized clips
+│       ├── *.mp4                     ← normalized clips
+│       └── *_extaudio.wav            ← conformed external-audio strips (one per paired clip)
 ├── my_project.blend                ← VSE project
 ├── my_project_cut.blend            ← copy with cuts applied (post-KM)
 └── blender_import.log
@@ -264,7 +265,7 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
 
 - **macOS** is the primary target. `avconvert` (iPhone HDR→SDR) is macOS-only; on Linux, the pipeline falls back to ffmpeg's zscale tone-map automatically.
 - All scripts support **drag-and-drop** path input when run without arguments — useful in Terminal on macOS.
-- Blender is auto-detected at `/Applications/Blender.app` (macOS) and `/usr/bin/blender` (Linux). Pass `--blender /path/to/blender` to override.
+- Blender is auto-detected on `PATH` and at common install locations (`/Applications/Blender.app` on macOS, `/usr/bin/blender` / `/usr/local/bin/blender` / `~/blender/blender` on Linux). Pass `--blender /path/to/blender` to override.
 
 ---
 
