@@ -22,6 +22,7 @@ Platform: macOS primary, Linux Mint compatible.
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -221,7 +222,12 @@ print("VALIDATION_COMPLETE")
 # Run Blender headlessly
 # ---------------------------------------------------------------------------
 
-def run_blender(blender_bin: str, blend_file: str) -> bool:
+def run_blender(blender_bin: str, blend_file: str) -> tuple[bool, int | None, str | None]:
+    """
+    Run validation in Blender. Returns (success, km_loops, cut_path) — the
+    loop count and _cut.blend path are parsed from the Blender script's
+    stdout so main() can show a concrete next-step command.
+    """
     script_src = VALIDATE_TEMPLATE.format(blend_file=blend_file)
 
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".py", prefix="vse_validate_")
@@ -233,6 +239,8 @@ def run_blender(blender_bin: str, blend_file: str) -> bool:
         print()
 
         success = False
+        km_loops: int | None = None
+        cut_path: str | None = None
         proc = subprocess.Popen(
             [blender_bin, "--background", "--python", tmp_path],
             stdout=subprocess.PIPE,
@@ -245,6 +253,13 @@ def run_blender(blender_bin: str, blend_file: str) -> bool:
                 print(f"  {line}")
             if "VALIDATION_COMPLETE" in line:
                 success = True
+            # Capture next-step inputs from the Blender script's own prints.
+            m = re.search(r"KM loops\s*:\s*(\d+)", line)
+            if m:
+                km_loops = int(m.group(1))
+            m = re.search(r"Saved:\s*(.+\.blend)\s*$", line)
+            if m:
+                cut_path = m.group(1).strip()
         proc.wait()
 
     finally:
@@ -254,8 +269,8 @@ def run_blender(blender_bin: str, blend_file: str) -> bool:
             pass
 
     if proc.returncode != 0:
-        return False
-    return success
+        return False, km_loops, cut_path
+    return success, km_loops, cut_path
 
 
 # ---------------------------------------------------------------------------
@@ -280,10 +295,23 @@ def main():
     blender_bin = find_blender()
 
     # ── Run ──────────────────────────────────────────────────────────────────
-    success = run_blender(blender_bin, blend_file)
+    success, km_loops, cut_path = run_blender(blender_bin, blend_file)
 
     if not success:
         sys.exit(1)
+
+    # ── Next step ────────────────────────────────────────────────────────────
+    header("Next step")
+    repo_dir = os.path.dirname(os.path.abspath(__file__))
+    trigger = os.path.join(repo_dir, "blender-km-macros", "scripts", "trigger.sh")
+    loops_str = str(km_loops) if km_loops is not None else "<N>"
+    cut_path_str = cut_path or f"{os.path.splitext(blend_file)[0]}_cut.blend"
+    print(f"  1. Make sure Blender is running with {os.path.basename(cut_path_str)} open, then trigger")
+    print(f"     the Keyboard Maestro cutting macro ({loops_str} loop(s)):")
+    print(f"       \"{trigger}\" {loops_str}")
+    print(f"  2. After the macro finishes, clean up the markers:")
+    print(f"       python3 vse-remove-markers.py \"{cut_path_str}\"")
+    print()
 
 
 if __name__ == "__main__":

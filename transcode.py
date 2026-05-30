@@ -897,6 +897,9 @@ def main():
     if failed:
         sys.exit(1)
 
+    header("Next step")
+    print(f"  python3 import-vse.py \"{project_dir}\"\n")
+
 
 if __name__ == "__main__":
     main()

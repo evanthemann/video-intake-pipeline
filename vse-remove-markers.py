@@ -188,6 +188,9 @@ def main():
     if not success:
         sys.exit(1)
 
+    say("\n── Pipeline complete ──\n")
+    ok(f"Edit-ready project: {blend_file}\n")
+
 
 if __name__ == "__main__":
     main()

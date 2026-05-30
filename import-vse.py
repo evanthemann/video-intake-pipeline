@@ -373,6 +373,23 @@ with bpy.context.temp_override(
     for strip in sequence_editor.sequences:
         strip.select = True
 
+    # Zoom the VSE to fit every imported strip. The area override is required
+    # for view_all; this runs inside the same temp_override block as the strip
+    # add ops. Whether the framing survives save+reopen is up to Blender's
+    # per-area view persistence — if it doesn't, this is still a no-op cost.
+    try:
+        bpy.ops.sequencer.view_all()
+    except RuntimeError as e:
+        print(f"Warning: view_all failed: {{e}}")
+
+# Set scene end to the last frame of the last clip so the playback range
+# matches the imported content instead of Blender's default 250.
+# current_frame is the insertion point for the *next* clip (exclusive), so
+# the last playable frame is current_frame - 1.
+if imported > 0:
+    scene.frame_end = max(1, current_frame - 1)
+    print("Scene end frame set to %d." % scene.frame_end)
+
 print("Imported %d clip(s) across %d timeline slot(s)." % (imported, total))
 
 # ── Apply Video Editing workspace ────────────────────────────────────────────
@@ -684,11 +701,11 @@ def main():
     header("Done")
     ok(f"Project saved: {blend_file}")
     print()
-    say("Next steps:")
-    say("  • Open the .blend file in Blender")
-    say("  • View > Frame All  in the sequencer to see all clips")
-    say("  • Run proxy generation when ready:")
-    say("      blender_vse.sh --proxies")
+    header("Next step")
+    print("  1. Open the .blend in Blender and place F / u markers on the segments to keep.")
+    print(f"     open \"{blend_file}\"")
+    print("  2. When markers are in, validate them:")
+    print(f"       python3 vse-validate-markers.py \"{blend_file}\"")
     print()
 
 

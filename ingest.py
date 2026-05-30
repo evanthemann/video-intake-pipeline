@@ -1249,6 +1249,9 @@ def main():
 
     print(f"\nDone. All outputs in: {output_dir}\n")
 
+    print("── Next step ──\n")
+    print(f"  python3 transcode.py \"{input_dir}\"\n")
+
 
 if __name__ == "__main__":
     main()
