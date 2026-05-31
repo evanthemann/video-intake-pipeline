@@ -16,6 +16,7 @@ Platform: macOS primary, Linux Mint compatible.
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -93,6 +94,7 @@ import bpy
 import sys
 
 BLEND_FILE = {blend_file!r}
+OUT_PATH   = {out_path!r}
 
 bpy.ops.wm.open_mainfile(filepath=BLEND_FILE)
 
@@ -103,7 +105,8 @@ print()
 print("=" * 60)
 print("  VSE REMOVE MARKERS")
 print("=" * 60)
-print(f"  File   : {{BLEND_FILE}}")
+print(f"  Input  : {{BLEND_FILE}}")
+print(f"  Output : {{OUT_PATH}}")
 print(f"  Markers: {{count}}")
 print("=" * 60)
 
@@ -114,8 +117,8 @@ else:
         scene.timeline_markers.remove(scene.timeline_markers[0])
     print(f"  Removed {{count}} marker(s).")
 
-bpy.ops.wm.save_mainfile()
-print(f"  Saved: {{BLEND_FILE}}")
+bpy.ops.wm.save_as_mainfile(filepath=OUT_PATH)
+print(f"  Saved: {{OUT_PATH}}")
 print("REMOVE_COMPLETE")
 '''
 
@@ -124,8 +127,33 @@ print("REMOVE_COMPLETE")
 # Run Blender headlessly
 # ---------------------------------------------------------------------------
 
-def run_blender(blender_bin: str, blend_file: str) -> bool:
-    script_src = REMOVE_TEMPLATE.format(blend_file=blend_file)
+def next_project_path(cut_blend_path: str) -> str | None:
+    """
+    Compute the next-round project path from a `_cut.blend` produced by
+    vse-validate-markers.py.
+
+    Given `…/project_N_cut.blend`, return `…/project_<N+1>.blend`,
+    auto-bumping further if `_<N+1>.blend` already exists (from a
+    half-completed earlier round). Returns None if the input doesn't
+    match the chain shape — in that case the caller should fall back
+    to an in-place save.
+    """
+    dirpath  = os.path.dirname(cut_blend_path)
+    filename = os.path.basename(cut_blend_path)
+    m = re.match(r"^(?P<stem>.+)_(?P<n>\d+)_cut\.blend$", filename)
+    if not m:
+        return None
+    stem = m.group("stem")
+    n    = int(m.group("n"))
+    while True:
+        n += 1
+        candidate = os.path.join(dirpath, f"{stem}_{n}.blend")
+        if not os.path.exists(candidate):
+            return candidate
+
+
+def run_blender(blender_bin: str, blend_file: str, out_path: str) -> bool:
+    script_src = REMOVE_TEMPLATE.format(blend_file=blend_file, out_path=out_path)
 
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".py", prefix="vse_remove_markers_")
     try:
@@ -182,14 +210,32 @@ def main():
     # ── Find Blender ─────────────────────────────────────────────────────────
     blender_bin = find_blender()
 
+    # ── Compute next-round output path (or fall back to in-place save) ───────
+    bumped_path = next_project_path(blend_file)
+    out_path = bumped_path or blend_file
+
     # ── Run ──────────────────────────────────────────────────────────────────
-    success = run_blender(blender_bin, blend_file)
+    success = run_blender(blender_bin, blend_file, out_path)
 
     if not success:
         sys.exit(1)
 
-    say("\n── Pipeline complete ──\n")
-    ok(f"Edit-ready project: {blend_file}\n")
+    if bumped_path:
+        # Successful round — emit the cycle's next-step hint pointing at the
+        # freshly-bumped project file so the user can start another round of
+        # marker placement immediately.
+        say("\n── Round complete ──\n")
+        ok(f"Next-round project: {out_path}\n")
+        say("Next step (if you want another round of cuts):")
+        print(f"  1. Open the new project and place markers:")
+        print(f"       open \"{out_path}\"")
+        print(f"  2. When markers are in, validate them:")
+        print(f"       python3 vse-validate-markers.py \"{out_path}\"")
+        print()
+    else:
+        # Input wasn't a chain-shaped _cut.blend — legacy in-place behaviour.
+        say("\n── Pipeline complete ──\n")
+        ok(f"Edit-ready project: {out_path}\n")
 
 
 if __name__ == "__main__":

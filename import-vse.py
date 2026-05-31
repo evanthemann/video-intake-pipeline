@@ -134,6 +134,27 @@ def load_manifest(path: str) -> list[dict]:
     return files
 
 
+def next_project_name(project_dir: str) -> str:
+    """
+    Suggest the next project filename for a fresh import.
+
+    First import → `<dirname>_1`. Subsequent imports of the same project
+    → `<dirname>_<max+1>`, scanning existing `<dirname>_<N>.blend` files
+    in the project dir. Keeps a consistent numbering convention with the
+    `_cut` chain produced by vse-validate-markers.py.
+    """
+    basename = os.path.basename(os.path.normpath(project_dir))
+    pattern  = re.compile(rf"^{re.escape(basename)}_(\d+)\.blend$")
+    existing: list[int] = []
+    if os.path.isdir(project_dir):
+        for entry in os.listdir(project_dir):
+            m = pattern.match(entry)
+            if m:
+                existing.append(int(m.group(1)))
+    next_n = (max(existing) + 1) if existing else 1
+    return f"{basename}_{next_n}"
+
+
 # ---------------------------------------------------------------------------
 # Resolution + fps from manifest
 # ---------------------------------------------------------------------------
@@ -611,7 +632,7 @@ def main():
 
     project_name = args.name
     if not project_name:
-        default = os.path.basename(project_dir)
+        default = next_project_name(project_dir)
         print(f"  Project name [{default}]: ", end="", flush=True)
         entered = input().strip()
         project_name = entered if entered else default

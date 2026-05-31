@@ -214,7 +214,8 @@ Raw footage (iPhone · GoPro · OBS · Canon · iVue · stills)
      blender-km-macros/scripts/trigger.sh N ]
         │
         ▼
-5. vse-remove-markers.py     — wipe all timeline markers, save in place
+5. vse-remove-markers.py     — wipe markers, bump project number
+                               (_N_cut.blend → _(N+1).blend)
         │
         ▼
    Edit-ready Blender project
@@ -334,7 +335,7 @@ python3 import-vse.py          # prompted — supports drag-and-drop
   <li>Alternating F… / u naming</li>
   <li>No overlapping ranges</li>
 </ul>
-<p>On success: saves a <code>_cut.blend</code> copy of your project and prints the number of KM macro loops needed.</p>
+<p>On success: saves a <code>&lt;stem&gt;_cut.blend</code> copy of your project (one cut per round; prompts before overwriting an existing cut) and prints the number of KM macro loops needed.</p>
 <pre>
 python3 vse-validate-markers.py /path/to/project.blend
 python3 vse-validate-markers.py          # prompted — supports drag-and-drop
@@ -350,7 +351,7 @@ python3 vse-validate-markers.py          # prompted — supports drag-and-drop
 <p><code>trigger.sh</code> won't fire if Blender isn't running. See the subfolder README for the macro internals and import notes.</p>
 
 <h3>5 — <code>vse-remove-markers.py</code></h3>
-<p>Opens a <code>.blend</code> file in Blender headlessly, removes every timeline marker, and saves in place. Run this after the Keyboard Maestro macro has finished cutting.</p>
+<p>Opens a <code>&lt;stem&gt;_&lt;N&gt;_cut.blend</code> file in Blender headlessly, removes every timeline marker, and saves the cleaned result as <code>&lt;stem&gt;_&lt;N+1&gt;.blend</code> — bumping the project number so each completed round of edits advances the chain (<code>_1.blend</code> → <code>_1_cut.blend</code> → <code>_2.blend</code> → <code>_2_cut.blend</code> → <code>_3.blend</code> → …). Run after the KM cutting macro. The closing next-step hint points back at <code>vse-validate-markers.py</code> for the freshly bumped project, closing the cycle. Inputs that aren't chain-shaped <code>_cut.blend</code> files fall back to saving in place (legacy one-off cleanup).</p>
 <pre>
 python3 vse-remove-markers.py /path/to/project.blend
 python3 vse-remove-markers.py          # prompted — supports drag-and-drop
@@ -367,8 +368,10 @@ project_folder/
 │       ├── manifest_transcoded.json  ← transcode output
 │       ├── *.mp4                     ← normalized clips
 │       └── *_extaudio.wav            ← conformed external-audio strips (one per paired clip)
-├── my_project.blend                ← VSE project
-├── my_project_cut.blend            ← copy with cuts applied (post-KM)
+├── my_project_1.blend              ← VSE project (first round)
+├── my_project_1_cut.blend          ← copy with markers, KM cuts here
+├── my_project_2.blend              ← markers removed; ready for next round
+│                                     (cycle continues: _2_cut → _3.blend → …)
 └── blender_import.log
 </pre>
 
@@ -382,17 +385,23 @@ python3 transcode.py ~/footage/trip
 
 # 3. Import into Blender
 python3 import-vse.py ~/footage/trip --name trip_edit
+# (or just `python3 import-vse.py ~/footage/trip` — the prompt defaults to
+#  trip_1, auto-bumping if higher-numbered projects already exist)
 
-# --- Open trip_edit.blend, do manual editing, place F/u markers ---
+# --- Open trip_edit_1.blend, do manual editing, place F/u markers ---
 
 # 4. Validate markers
-python3 vse-validate-markers.py ~/footage/trip/trip_edit.blend
+python3 vse-validate-markers.py ~/footage/trip/trip_edit_1.blend
 
 # 4.5 Run the Keyboard Maestro cutting macro (N = loop count printed by step 4)
 ./blender-km-macros/scripts/trigger.sh &lt;N&gt;
 
-# 5. Clean up markers
-python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
+# 5. Clean up markers — writes trip_edit_2.blend (project number bumps each round)
+python3 vse-remove-markers.py ~/footage/trip/trip_edit_1_cut.blend
+
+# Want another round? Open trip_edit_2.blend, place new markers, and loop back
+# to step 4 against trip_edit_2.blend — vse-remove-markers will produce
+# trip_edit_3.blend, and so on.
 </pre>
 <p>Each script also prints the exact command to run for the next stage when it finishes, threaded with the paths it just produced — so in practice you can also just copy-paste from one script's terminal output into the next.</p>
 
@@ -405,7 +414,6 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
 
 <h4>Roadmap</h4>
 <ul>
-  <li><strong>Enumerate <code>.blend</code> outputs on each cut run</strong> — vse-validate-markers.py currently writes <code>&lt;name&gt;_cut.blend</code>, overwriting any previous cut from earlier runs of the same project. Suffix subsequent runs with <code>_2</code>, <code>_3</code>, etc. so historical cuts are preserved. Companion change: import-vse.py should suggest <code>&lt;name&gt;_1.blend</code> as the default on creation so the numbering convention is consistent from the project's first .blend onward.</li>
   <li><strong>Proxy generation</strong> — re-add <code>redo_proxies.py</code> as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender.</li>
   <li><strong>Subtitles for the Blender timeline itself</strong> — the <code>captions/</code> add-on already covers post-export caption generation (Whisper → SRT → soft-embedded mov_text or hard-burn). What's still on the wishlist: importing SRT / VTT as text strips directly onto the Blender VSE timeline (so captions are visible during editing rather than only on the final render), and a multi-language pass that produces several mov_text streams in one mux. Auto-translation is out of scope.</li>
   <li><strong>After Effects export</strong> — convert the VSE timeline to an AE-compatible project file (via ExtendScript or <code>aescript</code> bridge) for finishing in After Effects.</li>
@@ -548,7 +556,7 @@ vse-remove-markers.py    -->  clean project_cut.blend
 
 <h3>Stage 5 -- vse-remove-markers.py: tidy up</h3>
 
-<p>Once the macro has done its cutting, the <code>F../u</code> markers are just clutter. This last script opens the <code>.blend</code> file, removes every timeline marker, and saves in place — leaving a clean, edit-ready project.</p>
+<p>Once the macro has done its cutting, the <code>F../u</code> markers are just clutter. This last script opens the <code>&lt;stem&gt;_&lt;N&gt;_cut.blend</code> file, removes every timeline marker, and saves the result as <code>&lt;stem&gt;_&lt;N+1&gt;.blend</code> — leaving a clean, edit-ready project and bumping the project number so the chain advances. Each completed round of (edit → mark → cut → clean) produces the next-round project file, and the next-step hint at the bottom of the output points right back at <code>vse-validate-markers.py</code> with the new file, closing the cycle for as many rounds as you want.</p>
 
 <h3>Optional add-on — captions/</h3>
 <p>After you've rendered your cut Blender project to MP4, the <code>captions/</code> subfolder offers an opt-in tool (<code>python3 captions/captions.py &lt;file.mp4&gt;</code>) that transcribes the audio with whisper.cpp and either soft-embeds the captions as a toggleable <code>mov_text</code> track in a sibling <code>_subbed.mp4</code> (default) or hard-burns them into pixels with <code>--burn</code>. The script is stdlib-only Python — it shells out to <code>whisper-cli</code> (Homebrew formula <code>whisper-cpp</code>, Metal-accelerated on Apple Silicon) and <code>ffmpeg</code>, the same architecture as every other pipeline script. No <code>pip install</code>, no venv, no PyTorch — just <code>brew install whisper-cpp</code> and a one-time <code>curl</code> for the model file, both documented in <code>captions/README.md</code>. Many pipeline runs just upload to YouTube and let YouTube do the captioning, and never touch this folder.</p>

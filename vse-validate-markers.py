@@ -102,6 +102,7 @@ import os
 import sys
 
 BLEND_FILE = {blend_file!r}
+CUT_PATH   = {cut_path!r}
 
 # ── Color helpers (stdout only; blender --background is not a tty) ────────
 def ok(msg):   print(f"OK   {{msg}}")
@@ -202,14 +203,10 @@ loops = max(len(valid_pairs) - 1, 0)
 print(f"\\n  Valid pairs : {{len(valid_pairs)}}")
 print(f"  KM loops    : {{loops}}")
 
-# ── Save _cut copy ────────────────────────────────────────────────────────
+# ── Save _cut copy (path chosen by the Python wrapper so it stays unique) ─
 print("\\n── Saving _cut Copy ──\\n")
-filepath = bpy.data.filepath
-dir_path = os.path.dirname(filepath)
-name, ext = os.path.splitext(os.path.basename(filepath))
-cut_path  = os.path.join(dir_path, f"{{name}}_cut{{ext}}")
-bpy.ops.wm.save_as_mainfile(filepath=cut_path)
-print(f"  Saved: {{cut_path}}")
+bpy.ops.wm.save_as_mainfile(filepath=CUT_PATH)
+print(f"  Saved: {{CUT_PATH}}")
 
 print(f"\\n{{'='*60}}")
 print(f"  Ready. Run Keyboard Maestro macro and loop {{loops}} time(s).")
@@ -222,13 +219,34 @@ print("VALIDATION_COMPLETE")
 # Run Blender headlessly
 # ---------------------------------------------------------------------------
 
-def run_blender(blender_bin: str, blend_file: str) -> tuple[bool, int | None, str | None]:
+def resolve_cut_path(blend_file: str) -> str:
     """
-    Run validation in Blender. Returns (success, km_loops, cut_path) — the
-    loop count and _cut.blend path are parsed from the Blender script's
-    stdout so main() can show a concrete next-step command.
+    Return the `_cut.blend` path for this validation run.
+
+    The workflow is: each `project_N.blend` produces exactly one
+    `project_N_cut.blend`, which the KM macro then chews through,
+    which vse-remove-markers.py then bumps to `project_<N+1>.blend`.
+    So we don't enumerate `_cut_2.blend` etc. — instead, if a cut
+    already exists for this input, that's an in-progress round and
+    we prompt before overwriting.
     """
-    script_src = VALIDATE_TEMPLATE.format(blend_file=blend_file)
+    stem, ext = os.path.splitext(blend_file)
+    cut_path = f"{stem}_cut{ext}"
+    if os.path.exists(cut_path):
+        warn(f"Cut file already exists: {cut_path}")
+        print("  Overwrite the previous cut? (y/n): ", end="", flush=True)
+        if not input().strip().lower().startswith("y"):
+            die("Aborted. Re-run with the markers you want, or delete the existing _cut.blend.")
+    return cut_path
+
+
+def run_blender(blender_bin: str, blend_file: str, cut_path: str) -> tuple[bool, int | None]:
+    """
+    Run validation in Blender. The cut_path is decided by the wrapper
+    (so it stays unique across re-runs); only the KM loop count needs
+    to be parsed out of Blender's stdout.
+    """
+    script_src = VALIDATE_TEMPLATE.format(blend_file=blend_file, cut_path=cut_path)
 
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".py", prefix="vse_validate_")
     try:
@@ -240,7 +258,6 @@ def run_blender(blender_bin: str, blend_file: str) -> tuple[bool, int | None, st
 
         success = False
         km_loops: int | None = None
-        cut_path: str | None = None
         proc = subprocess.Popen(
             [blender_bin, "--background", "--python", tmp_path],
             stdout=subprocess.PIPE,
@@ -253,13 +270,9 @@ def run_blender(blender_bin: str, blend_file: str) -> tuple[bool, int | None, st
                 print(f"  {line}")
             if "VALIDATION_COMPLETE" in line:
                 success = True
-            # Capture next-step inputs from the Blender script's own prints.
             m = re.search(r"KM loops\s*:\s*(\d+)", line)
             if m:
                 km_loops = int(m.group(1))
-            m = re.search(r"Saved:\s*(.+\.blend)\s*$", line)
-            if m:
-                cut_path = m.group(1).strip()
         proc.wait()
 
     finally:
@@ -269,8 +282,8 @@ def run_blender(blender_bin: str, blend_file: str) -> tuple[bool, int | None, st
             pass
 
     if proc.returncode != 0:
-        return False, km_loops, cut_path
-    return success, km_loops, cut_path
+        return False, km_loops
+    return success, km_loops
 
 
 # ---------------------------------------------------------------------------
@@ -294,8 +307,11 @@ def main():
     # ── Find Blender ─────────────────────────────────────────────────────────
     blender_bin = find_blender()
 
+    # ── Resolve the _cut.blend path (one per round; prompts on overwrite) ────
+    cut_path = resolve_cut_path(blend_file)
+
     # ── Run ──────────────────────────────────────────────────────────────────
-    success, km_loops, cut_path = run_blender(blender_bin, blend_file)
+    success, km_loops = run_blender(blender_bin, blend_file, cut_path)
 
     if not success:
         sys.exit(1)
@@ -305,12 +321,11 @@ def main():
     repo_dir = os.path.dirname(os.path.abspath(__file__))
     trigger = os.path.join(repo_dir, "blender-km-macros", "scripts", "trigger.sh")
     loops_str = str(km_loops) if km_loops is not None else "<N>"
-    cut_path_str = cut_path or f"{os.path.splitext(blend_file)[0]}_cut.blend"
-    print(f"  1. Make sure Blender is running with {os.path.basename(cut_path_str)} open, then trigger")
+    print(f"  1. Make sure Blender is running with {os.path.basename(cut_path)} open, then trigger")
     print(f"     the Keyboard Maestro cutting macro ({loops_str} loop(s)):")
     print(f"       \"{trigger}\" {loops_str}")
     print(f"  2. After the macro finishes, clean up the markers:")
-    print(f"       python3 vse-remove-markers.py \"{cut_path_str}\"")
+    print(f"       python3 vse-remove-markers.py \"{cut_path}\"")
     print()
 
 
