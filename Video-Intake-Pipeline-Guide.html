@@ -407,7 +407,7 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
 <ul>
   <li><strong>Enumerate <code>.blend</code> outputs on each cut run</strong> — vse-validate-markers.py currently writes <code>&lt;name&gt;_cut.blend</code>, overwriting any previous cut from earlier runs of the same project. Suffix subsequent runs with <code>_2</code>, <code>_3</code>, etc. so historical cuts are preserved. Companion change: import-vse.py should suggest <code>&lt;name&gt;_1.blend</code> as the default on creation so the numbering convention is consistent from the project's first .blend onward.</li>
   <li><strong>Proxy generation</strong> — re-add <code>redo_proxies.py</code> as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender.</li>
-  <li><strong>Subtitles</strong> — auto-generate or import SRT / VTT and burn or soft-attach to the Blender timeline.</li>
+  <li><strong>Subtitles for the Blender timeline itself</strong> — the <code>captions/</code> add-on already covers post-export caption generation (Whisper → SRT → soft-embedded mov_text or hard-burn). What's still on the wishlist: importing SRT / VTT as text strips directly onto the Blender VSE timeline (so captions are visible during editing rather than only on the final render), and a multi-language pass that produces several mov_text streams in one mux. Auto-translation is out of scope.</li>
   <li><strong>After Effects export</strong> — convert the VSE timeline to an AE-compatible project file (via ExtendScript or <code>aescript</code> bridge) for finishing in After Effects.</li>
 </ul>
 </div>
@@ -549,6 +549,9 @@ vse-remove-markers.py    -->  clean project_cut.blend
 <h3>Stage 5 -- vse-remove-markers.py: tidy up</h3>
 
 <p>Once the macro has done its cutting, the <code>F../u</code> markers are just clutter. This last script opens the <code>.blend</code> file, removes every timeline marker, and saves in place — leaving a clean, edit-ready project.</p>
+
+<h3>Optional add-on — captions/</h3>
+<p>After you've rendered your cut Blender project to MP4, the <code>captions/</code> subfolder offers an opt-in tool (<code>python3 captions/captions.py &lt;file.mp4&gt;</code>) that transcribes the audio with whisper.cpp and either soft-embeds the captions as a toggleable <code>mov_text</code> track in a sibling <code>_subbed.mp4</code> (default) or hard-burns them into pixels with <code>--burn</code>. The script is stdlib-only Python — it shells out to <code>whisper-cli</code> (Homebrew formula <code>whisper-cpp</code>, Metal-accelerated on Apple Silicon) and <code>ffmpeg</code>, the same architecture as every other pipeline script. No <code>pip install</code>, no venv, no PyTorch — just <code>brew install whisper-cpp</code> and a one-time <code>curl</code> for the model file, both documented in <code>captions/README.md</code>. Many pipeline runs just upload to YouTube and let YouTube do the captioning, and never touch this folder.</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ PART V -->
@@ -646,6 +649,9 @@ vse-remove-markers.py    -->  clean project_cut.blend
   <li><strong>idempotent</strong> -- safe to run again: re-running skips work already done.</li>
   <li><strong>headless / --background</strong> -- running Blender with no window, driven entirely by a script.</li>
   <li><strong>ffprobe / exiftool / identify</strong> -- the inspectors: media streams, EXIF tags, and image dimensions respectively.</li>
+  <li><strong>mov_text / soft-embedded subtitles</strong> -- the 3GPP timed-text subtitle stream supported inside MP4 containers. Captions travel with the file like a hard-burn but stay toggleable in compatible players (QuickTime, VLC, iPad, Apple TV). The default output of the optional <code>captions/</code> add-on.</li>
+  <li><strong>SRT / ASS</strong> -- subtitle file formats. SRT is plain-text editable (used as the on-disk source of truth and the input to the mov_text mux). ASS is more expressive (font, color, position, per-event styling) and is what the <code>--burn</code> path generates internally to drive ffmpeg's <code>subtitles</code> filter via libass.</li>
+  <li><strong>Whisper</strong> -- OpenAI's open-source speech-to-text model. The captions add-on uses <strong>whisper.cpp</strong> (Homebrew binary <code>whisper-cli</code>, Metal-accelerated on Apple Silicon) — not the heavier Python package <code>openai-whisper</code>. captions.py calls it as a subprocess with <code>-ojf</code> to get per-token JSON output, then groups tokens into phrase-length SRT entries (or one entry per token with <code>--word-by-word</code>).</li>
   <li><strong>git subtree</strong> -- the merge technique that folded the macro repo into this one while keeping its commit history.</li>
   <li><strong>percent-TriggerValue-percent</strong> -- the Keyboard Maestro token holding the value passed to a macro; here, the number of delete loops.</li>
 </ul>

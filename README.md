@@ -218,6 +218,12 @@ python3 vse-remove-markers.py          # prompted — supports drag-and-drop
 
 ---
 
+### Optional add-on: `captions/`
+
+After you've rendered your cut Blender project to MP4, [`captions/`](captions/README.md) auto-generates captions via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and either soft-embeds them as a toggleable `mov_text` track (default) or hard-burns them into a pixels-baked copy. Not part of the main pipeline — install separately (`brew install whisper-cpp`, plus a one-time `curl` for the model file) only when you want it. The script itself is stdlib-only Python, same architecture as the rest of the pipeline (orchestration shelling out to external binaries — `whisper-cli` joins `ffmpeg` / `blender` / `audio-offset-finder` in that role). Many runs just upload to YouTube and let YouTube do the captioning, so the main pipeline stays Whisper-free.
+
+---
+
 ## Folder Structure (after full run)
 
 ```
@@ -275,5 +281,5 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_cut.blend
 
 - **Enumerate `.blend` outputs on each cut run** — `vse-validate-markers.py` currently writes `<name>_cut.blend`, overwriting any previous cut from earlier runs of the same project. Suffix subsequent runs with `_2`, `_3`, etc. (e.g. `<name>_cut.blend`, then `<name>_cut_2.blend`, then `<name>_cut_3.blend`) so historical cuts are preserved for comparison or rollback. Companion change: `import-vse.py` should suggest `<name>_1.blend` as the default project filename on creation, so the cut chain starts at `<name>_1_cut.blend`, `<name>_1_cut_2.blend`, etc. — keeps the numbering convention consistent from the project's first .blend onward. Decide whether the follow-up `vse-remove-markers.py` next-step hint always points at the latest, or asks.
 - **Proxy generation** — re-add `redo_proxies.py` as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender
-- **Subtitles** — auto-generate or import SRT / VTT and burn or soft-attach to the Blender timeline
+- **Subtitles for the Blender timeline itself** — the `captions/` add-on already covers post-export caption generation (Whisper → SRT → soft-embedded mov_text or hard-burn into a sibling MP4). What's still on the wishlist: importing SRT / VTT as text strips directly onto the Blender VSE timeline (so captions are visible during editing rather than only on the final render), and a multi-language pass that produces several mov_text streams in one mux. Auto-translation is explicitly out of scope — let YouTube handle that side.
 - **After Effects export** — convert the VSE timeline to an AE-compatible project file (via ExtendScript or `aescript` bridge) for finishing in After Effects
