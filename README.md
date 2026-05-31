@@ -222,6 +222,10 @@ python3 vse-remove-markers.py          # prompted — supports drag-and-drop
 
 After you've rendered your cut Blender project to MP4, [`captions/`](captions/README.md) auto-generates captions via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and either soft-embeds them as a toggleable `mov_text` track (default) or hard-burns them into a pixels-baked copy. Not part of the main pipeline — install separately (`brew install whisper-cpp`, plus a one-time `curl` for the model file) only when you want it. The script itself is stdlib-only Python, same architecture as the rest of the pipeline (orchestration shelling out to external binaries — `whisper-cli` joins `ffmpeg` / `blender` / `audio-offset-finder` in that role). Many runs just upload to YouTube and let YouTube do the captioning, so the main pipeline stays Whisper-free.
 
+### Optional add-on: `after-effects/`
+
+For shoots that get cut in Blender (fastest for raw-footage trim work via the KM macro) but finished in After Effects (titles, motion graphics, finer compositing), [`after-effects/`](after-effects/README.md) exports your final `<project>_<N>.blend` timeline to JSON and rebuilds it as an AE composition called `Blender_VSE`. Stdlib-only Python wrapper that runs Blender headlessly, plus an ExtendScript that AE runs on the JSON. Per-clip timeline placement, in/out points, scale, and translation all carry through; the Blender VSE channel becomes the AE layer stack order, so the per-camera lane routing from `import-vse.py` survives the round trip. Not part of the main pipeline — only used when you finish in AE.
+
 ---
 
 ## Folder Structure (after full run)
@@ -289,4 +293,3 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_1_cut.blend
 
 - **Proxy generation** — re-add `redo_proxies.py` as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender
 - **Subtitles for the Blender timeline itself** — the `captions/` add-on already covers post-export caption generation (Whisper → SRT → soft-embedded mov_text or hard-burn into a sibling MP4). What's still on the wishlist: importing SRT / VTT as text strips directly onto the Blender VSE timeline (so captions are visible during editing rather than only on the final render), and a multi-language pass that produces several mov_text streams in one mux. Auto-translation is explicitly out of scope — let YouTube handle that side.
-- **After Effects export** — convert the VSE timeline to an AE-compatible project file (via ExtendScript or `aescript` bridge) for finishing in After Effects

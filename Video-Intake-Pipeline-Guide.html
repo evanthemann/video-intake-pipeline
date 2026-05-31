@@ -416,7 +416,6 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_1_cut.blend
 <ul>
   <li><strong>Proxy generation</strong> — re-add <code>redo_proxies.py</code> as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender.</li>
   <li><strong>Subtitles for the Blender timeline itself</strong> — the <code>captions/</code> add-on already covers post-export caption generation (Whisper → SRT → soft-embedded mov_text or hard-burn). What's still on the wishlist: importing SRT / VTT as text strips directly onto the Blender VSE timeline (so captions are visible during editing rather than only on the final render), and a multi-language pass that produces several mov_text streams in one mux. Auto-translation is out of scope.</li>
-  <li><strong>After Effects export</strong> — convert the VSE timeline to an AE-compatible project file (via ExtendScript or <code>aescript</code> bridge) for finishing in After Effects.</li>
 </ul>
 </div>
 
@@ -560,6 +559,9 @@ vse-remove-markers.py    -->  clean project_cut.blend
 
 <h3>Optional add-on — captions/</h3>
 <p>After you've rendered your cut Blender project to MP4, the <code>captions/</code> subfolder offers an opt-in tool (<code>python3 captions/captions.py &lt;file.mp4&gt;</code>) that transcribes the audio with whisper.cpp and either soft-embeds the captions as a toggleable <code>mov_text</code> track in a sibling <code>_subbed.mp4</code> (default) or hard-burns them into pixels with <code>--burn</code>. The script is stdlib-only Python — it shells out to <code>whisper-cli</code> (Homebrew formula <code>whisper-cpp</code>, Metal-accelerated on Apple Silicon) and <code>ffmpeg</code>, the same architecture as every other pipeline script. No <code>pip install</code>, no venv, no PyTorch — just <code>brew install whisper-cpp</code> and a one-time <code>curl</code> for the model file, both documented in <code>captions/README.md</code>. Many pipeline runs just upload to YouTube and let YouTube do the captioning, and never touch this folder.</p>
+
+<h3>Optional add-on — after-effects/</h3>
+<p>For shoots that get cut in Blender but finished in After Effects (titles, motion graphics, finer compositing), the <code>after-effects/</code> subfolder offers <code>export-to-ae.py</code>: a stdlib-only Python wrapper that runs Blender headlessly against your final <code>&lt;project&gt;_&lt;N&gt;.blend</code>, walks the VSE timeline, and writes a sibling JSON describing every MOVIE strip's source path, in/out points, channel, and transform. The companion <code>import_blender.jsx</code> ExtendScript then runs inside After Effects, reads that JSON, and rebuilds the timeline as a comp called <code>Blender_VSE</code> — clips placed at their timeline positions, scaled, offset, and sorted bottom-to-top by their Blender VSE channel so the per-camera lane routing from <code>import-vse.py</code> survives the round trip. Adapted from the standalone <code>blender-vse-to-ae</code> repo and standardized to match the same idioms (ANSI helpers, drag-and-drop input, <code>find_blender</code> auto-discovery, end-of-script next-step hint) as the main pipeline scripts.</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ PART V -->
