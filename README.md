@@ -292,4 +292,3 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_1_cut.blend
 ## Roadmap
 
 - **Proxy generation** — re-add `redo_proxies.py` as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender
-- **Subtitles for the Blender timeline itself** — the `captions/` add-on already covers post-export caption generation (Whisper → SRT → soft-embedded mov_text or hard-burn into a sibling MP4). What's still on the wishlist: importing SRT / VTT as text strips directly onto the Blender VSE timeline (so captions are visible during editing rather than only on the final render), and a multi-language pass that produces several mov_text streams in one mux. Auto-translation is explicitly out of scope — let YouTube handle that side.
