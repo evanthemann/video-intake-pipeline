@@ -291,4 +291,5 @@ python3 vse-remove-markers.py ~/footage/trip/trip_edit_1_cut.blend
 
 ## Roadmap
 
+- **Automate Blender's render/export settings + run the export** — a new top-level Python script (likely `render-export.py`) that takes the latest `<project>_<N>.blend` from the cut chain, configures the standard export settings via Blender's Python API (FFMPEG output, MP4 container, H.264 video with **keyframe interval 1** for downstream-friendly scrubbing, AAC audio), derives the output filename from the input (sibling `<project>_<N>.mp4`), and runs `bpy.ops.render.render(animation=True)` — all headless. Same pipeline idioms as the rest of the scripts: ANSI helpers, `sanitize_path` drag-and-drop input, `find_blender` auto-discovery, embedded Blender Python payload as a template string, end-of-script next-step hint pointing at the freshly rendered MP4 ready for `captions/captions.py` or `after-effects/export-to-ae.py`. Removes the recurring need to drop into Blender's UI just to set render properties and click **Render → Render Animation**.
 - **Proxy generation** — re-add `redo_proxies.py` as a post-import step; build 25% proxies for smooth VSE playback without leaving Blender
