@@ -144,6 +144,11 @@ def detect_source(path: str, ffprobe_tags: dict,
         return "iphone"
     if "gopro" in encoder or "gopro" in handler:
         return "gopro"
+    # DJI writes no EXIF Make/Model — identify it by the encoder string
+    # ("DJI Mini4 Pro"), the "DJI meta"/"DJI dbgi" metadata handlers, or the
+    # dji_fly_ filename prefix.
+    if "dji" in encoder or "dji" in handler or base.startswith("dji_"):
+        return "dji"
 
     # 3. iPhone naming patterns
     if re.match(r"img_\d+", base) or base.startswith("rpreplay"):
@@ -268,6 +273,11 @@ def clip_records_utc(tags: dict) -> bool:
     encoder = tags.get("encoder", "").lower()
     handler = tags.get("handler_name", "").lower()
     if "gopro" in encoder or "gopro" in handler:
+        return True
+    # DJI stamps creation_time in true UTC (e.g. 16:49:44Z for a 12:49 -0400
+    # shot). Without this it would be mistaken for a naive-local camera and
+    # double-shifted by the batch offset.
+    if "dji" in encoder or "dji" in handler:
         return True
     return False
 
@@ -487,6 +497,12 @@ def inspect_file(path: str) -> dict:
     else:
         exif_make, exif_model = exiftool_make_model(path)
         camera_model = exif_model
+        # DJI exposes no Make/Model but names itself in the encoder tag
+        # ("DJI Mini4 Pro"), which doubles as a clean per-camera lane key.
+        if not camera_model:
+            encoder = tags.get("encoder", "")
+            if "dji" in encoder.lower():
+                camera_model = encoder
 
     source = detect_source(path, tags, exif_make, exif_model)
 
