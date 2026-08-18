@@ -1283,14 +1283,26 @@ def main():
 
     # Write outputs
     print("Writing outputs …")
-    p1 = write_manifest(entries, input_dir, output_dir)
-    print(f"  ✓  {os.path.basename(p1)}")
+    try:
+        # Recreate output_dir defensively — the sync/audio prompts above can
+        # sit open for a while, and if the input folder gets renamed or moved
+        # in the meantime (e.g. mid-run Finder rename), the directory made at
+        # startup is gone by the time we get here.
+        os.makedirs(output_dir, exist_ok=True)
+        p1 = write_manifest(entries, input_dir, output_dir)
+        print(f"  ✓  {os.path.basename(p1)}")
 
-    p2 = write_clips_ordered(entries, output_dir)
-    print(f"  ✓  {os.path.basename(p2)}")
+        p2 = write_clips_ordered(entries, output_dir)
+        print(f"  ✓  {os.path.basename(p2)}")
 
-    p3 = write_ingest_report(entries, input_dir, output_dir, tz_summary)
-    print(f"  ✓  {os.path.basename(p3)}")
+        p3 = write_ingest_report(entries, input_dir, output_dir, tz_summary)
+        print(f"  ✓  {os.path.basename(p3)}")
+    except OSError as e:
+        print(f"\nError: could not write to {output_dir} ({e}).", file=sys.stderr)
+        print("Did the input folder get renamed, moved, or deleted while ingest.py "
+              "was running? Re-run ingest.py once the folder is back in place.",
+              file=sys.stderr)
+        sys.exit(1)
 
     print(f"\nDone. All outputs in: {output_dir}\n")
 
@@ -1299,4 +1311,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nInterrupted by user (Ctrl-C).", file=sys.stderr)
+        sys.exit(130)
