@@ -282,6 +282,31 @@ def clip_records_utc(tags: dict) -> bool:
     return False
 
 
+def parse_apple_creation_utc(tags: dict) -> str | None:
+    """
+    Convert com.apple.quicktime.creationdate (local wall-clock + explicit offset)
+    into a true-UTC ISO-8601 string, matching parse_creation_time's format.
+
+    This tag preserves the ORIGINAL recording time even after a Photos "Save as
+    New Video" / trim export, whereas the container creation_time (mvhd) gets
+    re-stamped to the moment of export. Preferring this tag keeps re-exported
+    clips in their real chronological place. Returns None if absent/unparseable.
+    """
+    raw = tags.get("com.apple.quicktime.creationdate", "")
+    if not raw:
+        return None
+    try:
+        dt = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S%z")   # offset '-0400'
+    except ValueError:
+        try:
+            dt = datetime.fromisoformat(raw)                 # offset '-04:00'
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        return None
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def parse_apple_offset_minutes(tags: dict) -> int | None:
     """
     Extract the local UTC offset (minutes) from an Apple
@@ -573,7 +598,11 @@ def inspect_file(path: str) -> dict:
         records_utc = clip_records_utc(tags)
         apple_offset_min = parse_apple_offset_minutes(tags)
         if records_utc:
-            creation_time = parse_creation_time(tags)
+            # Prefer com.apple.quicktime.creationdate — it survives a Photos
+            # "Save as New Video" export, whereas the mvhd creation_time is
+            # re-stamped to the export moment. Non-Apple UTC clips (GoPro, DJI)
+            # lack this tag and fall back to the container creation_time.
+            creation_time = parse_apple_creation_utc(tags) or parse_creation_time(tags)
         else:
             creation_time = None  # filled in by the batch-offset pass
             # OBS writes no creation_time tag — recover from its filename.
