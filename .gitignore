@@ -14,3 +14,7 @@ blender_import.log
 
 # Locally rendered guide PDFs (HTML is the canonical source in the repo)
 *.pdf
+
+# Personal / not-for-repo
+label.py
+BRANDING.md
