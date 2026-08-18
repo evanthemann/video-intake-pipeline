@@ -59,6 +59,21 @@ def warn(msg):   print(_c("1;33",  f"⚠ {msg}"), file=sys.stderr)
 def die(msg):    print(_c("0;31",  f"✖ {msg}"), file=sys.stderr); sys.exit(1)
 def header(msg): print(_c("1;36",  f"\n── {msg} ──\n"))
 
+def confirm_yn(prompt: str) -> bool:
+    """
+    Ask a y/n question and keep re-prompting on anything but an explicit
+    y/yes/n/no — Enter alone (or any other stray input) is not a valid
+    answer here, only Ctrl-C exits without one.
+    """
+    while True:
+        print(f"  {prompt} (y/n): ", end="", flush=True)
+        ans = input().strip().lower()
+        if ans in ("y", "yes"):
+            return True
+        if ans in ("n", "no"):
+            return False
+        print("  Please answer y or n.")
+
 
 # ---------------------------------------------------------------------------
 # Path sanitiser (drag-and-drop / copy-paste safe)
@@ -644,8 +659,7 @@ def main():
 
     if os.path.isfile(blend_file):
         warn(f"Blend file already exists: {blend_file}")
-        print("  Overwrite? (y/n): ", end="", flush=True)
-        if not input().strip().lower().startswith("y"):
+        if not confirm_yn("Overwrite?"):
             die("Aborted.")
 
     say(f"Will save: {blend_file}")
@@ -718,8 +732,7 @@ def main():
         say(f"{n_sync} synced camera pair(s) will overlap on their respective camera lanes.")
     if n_extaud:
         say(f"{n_extaud} clip(s) with external audio will overlay on shared per-source audio channels.")
-    print("  Looks good? (y/n): ", end="", flush=True)
-    if not input().strip().lower().startswith("y"):
+    if not confirm_yn("Looks good?"):
         die("Aborted. Re-run ingest.py / transcode.py to change the order.")
 
     # ── Find Blender ─────────────────────────────────────────────────────────
@@ -774,4 +787,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print()
+        die("Interrupted by user (Ctrl-C).")
