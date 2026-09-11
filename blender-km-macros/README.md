@@ -6,17 +6,59 @@ so the "Delete clips Blender" macro can be triggered from anywhere (terminal,
 scripts, other apps), running the clip-deletion cycle a number of times you pass
 in.
 
-This folder is **part of the [video-intake-pipeline](../README.md) repository** — it
-provides **step 4.5** of that pipeline: the clip-cutting macro you run after
-`vse-validate-markers.py` and before `vse-remove-markers.py`. See the
-[top-level README](../README.md) for the full footage → edit workflow.
+This folder is **part of the [video-intake-pipeline](../README.md) repository** — an
+**optional, macOS-only add-on** providing the *cutting round*: a self-contained loop that
+sits inside the "edit in Blender" phase, between pipeline steps 3 and 4. It is not a
+numbered pipeline step.
+
+The F/u marker convention exists purely to drive the macro in here. **If you aren't using
+Keyboard Maestro, you wouldn't place these markers at all** — you'd edit, cut, and save-as
+in Blender directly, then render with `4-render-export.py`. So this folder is all-or-nothing:
+the two scripts and the macro are one unit.
+
+## Check your setup
+
+```bash
+python3 blender-km-macros/check-deps.py
+```
+
+Verifies Keyboard Maestro is installed, the Engine is running, Blender and
+`osascript` are reachable, and `trigger.sh` is executable. Most usefully it
+reads Keyboard Maestro's own macro store to confirm the two macros are
+**actually imported** — the app being installed doesn't mean they are, and that
+gap is the one that usually bites. On Linux it reports that the whole add-on is
+unavailable and exits 0, since the core pipeline doesn't need it.
+
+The top-level `0-check-deps.py` deliberately skips this folder.
+
+## The cutting round
+
+```bash
+# 1. Place F / u markers in Blender, then validate them:
+python3 blender-km-macros/validate-markers.py /path/to/project_1.blend
+#    → saves project_1_cut.blend, prints the KM loop count N
+
+# 2. Open the _cut.blend in Blender, mouse over the VSE timeline, run the macro:
+./blender-km-macros/scripts/trigger.sh <N>
+
+# 3. Remove the markers and bump the project number for the next round:
+python3 blender-km-macros/remove-markers.py /path/to/project_1_cut.blend
+#    → writes project_2.blend
+```
+
+The chain advances one number per round (`_1.blend` → `_1_cut.blend` → `_2.blend` → …).
+Loop as many rounds as you want, then render the latest `.blend` with
+[`4-render-export.py`](../README.md).
 
 ## Layout within the repo
 
 ```
-video-intake-pipeline/              ← repo root (ingest.py, transcode.py, …)
+video-intake-pipeline/              ← repo root (1-ingest.py, 2-transcode.py, …)
 └── blender-km-macros/
     ├── README.md
+    ├── check-deps.py                              # preflight: KM installed AND macros imported
+    ├── validate-markers.py                        # step 1 of the round: validate F/u pairs
+    ├── remove-markers.py                          # step 3 of the round: wipe markers, bump number
     ├── macros/
     │   ├── Delete clips Blender.kmmacros          # the real macro
     │   └── Delete clips Blender (TEST).kmmacros   # dry-run version (no deletions)
@@ -50,7 +92,7 @@ cycle.
 
 > Paths above are relative to this `blender-km-macros/` folder. From the repo root,
 > prefix with the folder name — e.g. `./blender-km-macros/scripts/trigger.sh 5` —
-> which is the form the [top-level README](../README.md) uses for step 4.5.
+> which is the form the [top-level README](../README.md) uses.
 
 - Requires a number argument (after the optional `-t`/`--test` flag).
 - Exits with an error and a usage message if the number is missing.

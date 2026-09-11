@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ingest.py — Step 1 of the Video Intake & Blender VSE Pipeline
+1-ingest.py — Step 1 of the Video Intake & Blender VSE Pipeline
 
 Scans an input folder for video and image files, extracts metadata via
 ffprobe / ImageMagick, and writes three output files:
@@ -11,8 +11,8 @@ ffprobe / ImageMagick, and writes three output files:
     ingest_report.md    — narrative summary: counts, flags, timeline gaps
 
 Usage:
-    python3 ingest.py /path/to/footage
-    python3 ingest.py /path/to/footage --output /path/to/output_dir
+    python3 1-ingest.py /path/to/footage
+    python3 1-ingest.py /path/to/footage --output /path/to/output_dir
 
 Dependencies:
     ffprobe   (ffmpeg suite)
@@ -65,7 +65,7 @@ ZOOM_FILENAME_RE = re.compile(r"^ZOOM\d", re.IGNORECASE)
 
 def detect_audio_source(path: str) -> str:
     """
-    Classify an external audio file by recorder so import-vse.py can route
+    Classify an external audio file by recorder so 3-import-vse.py can route
     all strips from the same source onto a shared VSE channel.
 
     Order: filename pattern (Zoom recorders) → ffprobe handler tag (Apple
@@ -985,7 +985,7 @@ def write_ingest_report(entries: list[dict], input_dir: str, output_dir: str,
 
         if ext_audio_clips:
             a(f"**External audio ({len(ext_audio_clips)} clip(s))** — "
-              f"transcode.py will sync and replace each clip's audio with the paired file:")
+              f"2-transcode.py will sync and replace each clip's audio with the paired file:")
             for e in ext_audio_clips:
                 aud = os.path.basename(e["external_audio"])
                 a(f"- `{e['filename']}`  ←audio—  `{aud}`")
@@ -998,7 +998,7 @@ def write_ingest_report(entries: list[dict], input_dir: str, output_dir: str,
                 g = by_gid.setdefault(e["sync_group"], {})
                 g["base" if e.get("sync_base") else "angle"] = e["filename"]
             a(f"**Camera-sync pairs ({len(by_gid)})** — both angles kept as separate "
-              f"clips; transcode.py measures the audio offset, import-vse.py overlaps "
+              f"clips; 2-transcode.py measures the audio offset, 3-import-vse.py overlaps "
               f"them on separate Blender tracks:")
             for gid, members in by_gid.items():
                 base  = members.get("base")  or "(missing base)"
@@ -1102,8 +1102,8 @@ def prompt_for_camera_syncs(entries: list[dict]) -> int:
     Both clips must already be scanned project files — unlike external audio,
     both are preserved as separate videos. Stamps a shared `sync_group` id on
     both entries and `sync_base = True` on the base (the camera whose audio
-    anchors the timeline, typically OBS). transcode.py then measures the audio
-    offset and import-vse.py overlaps them on different channels.
+    anchors the timeline, typically OBS). 2-transcode.py then measures the audio
+    offset and 3-import-vse.py overlaps them on different channels.
 
     Returns the number of sync groups created.
     """
@@ -1264,20 +1264,20 @@ def main():
         sys.exit(0)
 
     # Optional: pair video clips with external audio files.
-    # The pairing is recorded in the manifest; transcode.py does the actual sync.
+    # The pairing is recorded in the manifest; 2-transcode.py does the actual sync.
     audio_pairs = prompt_for_audio_pairs(entries)
     if audio_pairs:
         for entry in entries:
             if entry["path"] in audio_pairs:
                 entry["external_audio"] = audio_pairs[entry["path"]]
-                # Classify the recorder so import-vse.py can route every strip
+                # Classify the recorder so 3-import-vse.py can route every strip
                 # from this source (e.g. every Zoom take) onto a shared channel.
                 entry["external_audio_source"] = detect_audio_source(entry["external_audio"])
         print()
 
     # Optional: sync two camera angles of the same take onto separate tracks.
-    # Stamps sync_group/sync_base on entries; transcode.py measures the offset
-    # and import-vse.py overlaps the pair on different channels.
+    # Stamps sync_group/sync_base on entries; 2-transcode.py measures the offset
+    # and 3-import-vse.py overlaps the pair on different channels.
     if prompt_for_camera_syncs(entries):
         print()
 
@@ -1299,15 +1299,15 @@ def main():
         print(f"  ✓  {os.path.basename(p3)}")
     except OSError as e:
         print(f"\nError: could not write to {output_dir} ({e}).", file=sys.stderr)
-        print("Did the input folder get renamed, moved, or deleted while ingest.py "
-              "was running? Re-run ingest.py once the folder is back in place.",
+        print("Did the input folder get renamed, moved, or deleted while 1-ingest.py "
+              "was running? Re-run 1-ingest.py once the folder is back in place.",
               file=sys.stderr)
         sys.exit(1)
 
     print(f"\nDone. All outputs in: {output_dir}\n")
 
     print("── Next step ──\n")
-    print(f"  python3 transcode.py \"{input_dir}\"\n")
+    print(f"  python3 2-transcode.py \"{input_dir}\"\n")
 
 
 if __name__ == "__main__":
@@ -1316,3 +1316,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nInterrupted by user (Ctrl-C).", file=sys.stderr)
         sys.exit(130)
+    except EOFError:
+        print("\nNo input available (stdin closed). Pass the path as an argument instead.",
+              file=sys.stderr)
+        sys.exit(1)

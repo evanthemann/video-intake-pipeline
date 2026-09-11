@@ -26,9 +26,27 @@ Dependencies:
     ggml-*.bin model — `curl` one to ~/whisper-models/ once; the script
                        prints the exact command if the requested one is
                        missing.
+    VAD model        — optional but recommended; see "Hallucination guards".
 
 This script imports only Python stdlib. Whisper runs as a subprocess
 (whisper.cpp via whisper-cli) — no PyTorch, no venv, no pip install.
+
+Hallucination guards:
+    Whisper fails loudly-but-plausibly when handed audio it can't parse: it
+    emits confident-sounding text that was never said, and can lock onto one
+    phrase and repeat it for an entire file. Three guards are built in here,
+    in the order they matter:
+
+    1. Phase-cancellation detection in extract_audio_to_wav(). The usual
+       `ffmpeg -ac 1` downmix can nearly cancel itself on out-of-phase stereo,
+       starving Whisper of signal. This was the true root cause of a 631-line
+       "(crickets chirping)" transcript on a real batch — the fix is upstream
+       of Whisper entirely.
+    2. `-mc 0`, so a mis-decoded chunk can't be fed forward as context and
+       cascade into every chunk after it.
+    3. Silero VAD, so silence and background noise are never shown to the
+       decoder. Enabled automatically when ggml-silero-v5.1.2.bin is in
+       --model-dir; disable with --no-vad.
 
 Platform: macOS primary, Linux Mint compatible.
 """
@@ -111,7 +129,7 @@ SOFT_BREAK_PUNCT     = ","
 SOFT_BREAK_MIN_WORDS = 3
 
 # Defaults
-DEFAULT_MODEL_SIZE = "small"
+DEFAULT_MODEL_SIZE = "medium"
 DEFAULT_MODEL_DIR  = os.path.expanduser("~/whisper-models")
 DEFAULT_LANGUAGE   = "auto"
 DEFAULT_FONT       = "Arial-Bold"
@@ -120,6 +138,18 @@ DEFAULT_WORD_SIZE   = 90
 
 MODEL_SIZES = {"tiny", "base", "small", "medium", "large"}
 MODEL_DOWNLOAD_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
+
+# Silero VAD model, looked for in --model-dir. Optional: if it isn't there the
+# script just runs without VAD rather than failing, so this stays portable to a
+# machine that never downloaded it.
+VAD_MODEL_NAME = "ggml-silero-v5.1.2.bin"
+VAD_DOWNLOAD_URL = f"{MODEL_DOWNLOAD_BASE}/{VAD_MODEL_NAME}"
+
+# A mono downmix this much quieter (dB) than the left channel alone means the
+# source's L/R are out of phase and the sum is cancelling itself out. 15 dB is
+# well past normal channel-balance variation; real phase-cancelled files have
+# shown gaps around 45 dB.
+PHASE_CANCEL_DB_GAP = 15.0
 
 
 # ---------------------------------------------------------------------------
@@ -164,27 +194,121 @@ def resolve_model_path(model_arg: str, model_dir: str) -> str:
 # Audio extraction (mono 16 kHz wav — whisper.cpp's native input)
 # ---------------------------------------------------------------------------
 
-def extract_audio_to_wav(mp4_path: str, out_wav: str, ffmpeg_bin: str) -> None:
-    cmd = [
-        ffmpeg_bin, "-y", "-loglevel", "error",
-        "-i", mp4_path,
-        "-vn", "-ac", "1", "-ar", "16000",
-        "-f", "wav", out_wav,
-    ]
+def _extract_wav(mp4_path: str, out_wav: str, ffmpeg_bin: str,
+                 audio_filter: str | None, channels: int | None) -> None:
+    """One 16 kHz WAV extraction pass. Dies on ffmpeg failure."""
+    cmd = [ffmpeg_bin, "-y", "-loglevel", "error", "-i", mp4_path, "-vn"]
+    if audio_filter:
+        cmd += ["-af", audio_filter]
+    if channels:
+        cmd += ["-ac", str(channels)]
+    cmd += ["-ar", "16000", "-f", "wav", out_wav]
+
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if r.returncode != 0:
         die(f"ffmpeg audio extract failed:\n{r.stderr[-800:]}")
+
+
+def _mean_volume_db(wav_path: str, ffmpeg_bin: str) -> float:
+    """
+    Mean volume of a WAV in dB via ffmpeg's volumedetect filter. Returns a
+    very low sentinel if it can't be read, so the caller treats the file as
+    having no usable signal rather than crashing.
+    """
+    r = subprocess.run(
+        [ffmpeg_bin, "-i", wav_path, "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True, timeout=600,
+    )
+    # volumedetect reports on stderr regardless of exit status.
+    for line in r.stderr.splitlines():
+        if "mean_volume:" in line:
+            try:
+                return float(line.split("mean_volume:")[1].strip().split()[0])
+            except (IndexError, ValueError):
+                break
+    return -99.0
+
+
+def probe_audio_channels(mp4_path: str, ffprobe_bin: str) -> int:
+    """Channel count of the first audio stream; 0 if there is no audio."""
+    r = subprocess.run(
+        [ffprobe_bin, "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=channels", "-of", "json", mp4_path],
+        capture_output=True, text=True, timeout=60,
+    )
+    try:
+        streams = json.loads(r.stdout).get("streams") or []
+        return int(streams[0]["channels"])
+    except (ValueError, KeyError, IndexError, TypeError):
+        return 0
+
+
+def extract_audio_to_wav(mp4_path: str, out_wav: str,
+                         ffmpeg_bin: str, ffprobe_bin: str) -> str:
+    """
+    Write a 16 kHz mono WAV for whisper.cpp, guarding against L/R phase
+    cancellation. Returns a short description of which source was used.
+
+    A plain `-ac 1` sum-to-mono downmix can land 30-45 dB quieter than either
+    channel alone when the source's L/R are out of phase — the sum nearly
+    cancels itself out. Whisper then has almost nothing to work with and
+    hallucinates: the failure that produced 631 identical "(crickets chirping)"
+    lines and zero real dialogue on a TV-archive batch. It reads as a model or
+    decoding problem but is entirely upstream of Whisper.
+
+    So: extract the downmix and the left channel separately, compare mean
+    volume, and use whichever actually has signal. Costs a couple of seconds of
+    volumedetect against a transcription run measured in minutes, and it's a
+    no-op on normal in-phase audio (the downmix wins, same output as before).
+    """
+    channels = probe_audio_channels(mp4_path, ffprobe_bin)
+
+    # Mono (or unprobeable) sources can't phase-cancel — nothing to compare.
+    if channels <= 1:
+        _extract_wav(mp4_path, out_wav, ffmpeg_bin, None, 1)
+        return "mono source"
+
+    tmpdir = tempfile.mkdtemp(prefix="caps_phase_")
+    try:
+        downmix = os.path.join(tmpdir, "downmix.wav")
+        leftonly = os.path.join(tmpdir, "left.wav")
+
+        _extract_wav(mp4_path, downmix, ffmpeg_bin, None, 1)
+        # `pan` rather than `-map_channel`, which ffmpeg 8.0 removed.
+        _extract_wav(mp4_path, leftonly, ffmpeg_bin, "pan=mono|c0=c0", None)
+
+        downmix_db = _mean_volume_db(downmix, ffmpeg_bin)
+        leftonly_db = _mean_volume_db(leftonly, ffmpeg_bin)
+
+        if leftonly_db - downmix_db > PHASE_CANCEL_DB_GAP:
+            warn(f"Mono downmix ({downmix_db:.1f} dB) is far quieter than the left "
+                 f"channel alone ({leftonly_db:.1f} dB) — likely L/R phase "
+                 f"cancellation. Using the left channel instead.")
+            shutil.move(leftonly, out_wav)
+            return f"left channel ({leftonly_db:.1f} dB; downmix was {downmix_db:.1f} dB)"
+
+        shutil.move(downmix, out_wav)
+        return f"mono downmix ({downmix_db:.1f} dB)"
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
 # whisper-cli (whisper.cpp) transcription
 # ---------------------------------------------------------------------------
 
+def resolve_vad_model(model_dir: str) -> str | None:
+    """Path to the Silero VAD model if it's in model_dir, else None."""
+    path = os.path.join(model_dir, VAD_MODEL_NAME)
+    return os.path.abspath(path) if os.path.isfile(path) else None
+
+
 def transcribe(
     wav_path: str,
     model_path: str,
     language: str,
     whisper_bin: str,
+    vad_model: str | None = None,
 ) -> list[tuple[float, float, str]]:
     """
     Run whisper-cli with full-JSON output (per-token timestamps), parse,
@@ -203,8 +327,21 @@ def transcribe(
             "-ojf",                 # output full JSON (per-token timestamps)
             "-of", json_stem_path,  # output filename stem (no extension)
             "-np",                  # no progress prints to stderr
-            wav_path,
+            # -mc 0 disables carrying decoded text forward as the prompt for the
+            # next 30s chunk. By default one mis-heard chunk (theme music, a
+            # laugh track, room tone) gets fed forward as context and the model
+            # locks onto it, re-emitting the same hallucinated phrase for every
+            # chunk after it — a single bad chunk silently destroys the whole
+            # transcript. With no cross-chunk context a bad guess can't cascade.
+            "-mc", "0",
         ]
+        if vad_model:
+            # Silero VAD: only hand Whisper segments that actually contain
+            # speech. Whisper's training data makes it fill silence and
+            # background noise with confident-sounding boilerplate rather than
+            # admitting uncertainty, so not showing it the silence is the fix.
+            cmd += ["--vad", "-vm", vad_model]
+        cmd.append(wav_path)
         # whisper-cli prints model info + a transcription preview to stderr;
         # capture it for diagnostics on failure but otherwise stay quiet.
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
@@ -507,6 +644,11 @@ def main() -> None:
                              f"phrase, {DEFAULT_WORD_SIZE} word-by-word).")
     parser.add_argument("--keep-srt-only", action="store_true",
                         help="Write the SRT and stop. No soft-mux or burn.")
+    parser.add_argument("--no-vad", action="store_true",
+                        help="Disable Silero VAD pre-filtering even if the model "
+                             "is present. VAD suppresses hallucinated text on "
+                             "silence; turn it off only if it's dropping real "
+                             "speech (very quiet dialogue).")
     args = parser.parse_args()
 
     # ── Resolve input ────────────────────────────────────────────────────────
@@ -530,8 +672,10 @@ def main() -> None:
                             ["/opt/homebrew/bin/whisper-cli"],
                             install_hint="brew install whisper-cpp")
 
-    # ── Resolve model path ───────────────────────────────────────────────────
-    model_path = resolve_model_path(args.model, os.path.expanduser(args.model_dir))
+    # ── Resolve model paths ──────────────────────────────────────────────────
+    model_dir  = os.path.expanduser(args.model_dir)
+    model_path = resolve_model_path(args.model, model_dir)
+    vad_model  = None if args.no_vad else resolve_vad_model(model_dir)
 
     # ── Output paths ─────────────────────────────────────────────────────────
     stem, _      = os.path.splitext(input_path)
@@ -550,6 +694,7 @@ def main() -> None:
     print(f"  Style    : {'word-by-word' if args.word_by_word else 'phrase'}")
     print(f"  Whisper  : {whisper_bin}")
     print(f"  Model    : {model_path}")
+    print(f"  VAD      : {vad_model if vad_model else 'off'}")
     print(f"  Language : {args.language}")
     print(f"  Outputs  : {os.path.basename(srt_path)}"
           + ("" if args.keep_srt_only else f", {os.path.basename(subbed_path)}")
@@ -561,13 +706,19 @@ def main() -> None:
     tmp_fd, tmp_wav = tempfile.mkstemp(suffix=".wav", prefix="caps_audio_")
     os.close(tmp_fd)
     try:
-        extract_audio_to_wav(input_path, tmp_wav, ffmpeg_bin)
-        ok("Audio extracted (16 kHz mono)")
+        source = extract_audio_to_wav(input_path, tmp_wav, ffmpeg_bin, ffprobe_bin)
+        ok(f"Audio extracted (16 kHz mono, {source})")
 
         # ── Step 2: Transcribe ──────────────────────────────────────────────
         header("Step 2: Transcribe (whisper.cpp)")
         say("Running whisper-cli (Metal-accelerated on Apple Silicon)…")
-        words = transcribe(tmp_wav, model_path, args.language, whisper_bin)
+        if not vad_model and not args.no_vad:
+            warn(f"No VAD model at {os.path.join(model_dir, VAD_MODEL_NAME)} — "
+                 f"running without speech detection, which makes hallucinated "
+                 f"text on silence more likely. Download it once with:\n"
+                 f"    curl -L -o {os.path.join(model_dir, VAD_MODEL_NAME)} \\\n"
+                 f"      {VAD_DOWNLOAD_URL}")
+        words = transcribe(tmp_wav, model_path, args.language, whisper_bin, vad_model)
         ok(f"Transcribed {len(words)} word(s).")
         if not words:
             warn("No speech detected. SRT will be empty.")

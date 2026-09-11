@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-transcode.py — Step 2 of the Video Intake & Blender VSE Pipeline
+2-transcode.py — Step 2 of the Video Intake & Blender VSE Pipeline
 
-Reads manifest.json produced by ingest.py and processes every file:
+Reads manifest.json produced by 1-ingest.py and processes every file:
 
     Images        → 6-second slow-zoom MP4  (1s static + 5s Ken Burns, libx264)
     iPhone HDR    → SDR via avconvert (PresetAppleM4V1080pHD), then ffmpeg for
@@ -19,9 +19,9 @@ the original manifest but with updated paths, dimensions, and flags — ready
 for the sort + Blender-import steps.
 
 Usage:
-    python3 transcode.py /path/to/project_folder
-    python3 transcode.py /path/to/project_folder --output /path/to/transcoded/
-    python3 transcode.py /path/to/project_folder --dry-run
+    python3 2-transcode.py /path/to/project_folder
+    python3 2-transcode.py /path/to/project_folder --output /path/to/transcoded/
+    python3 2-transcode.py /path/to/project_folder --dry-run
 
 Dependencies:
     avconvert    (macOS built-in, /usr/bin/avconvert) — iPhone HDR→SDR
@@ -347,7 +347,7 @@ def compute_sync_offsets(results: list[dict]) -> None:
     """
     For each sync group (two camera angles of the same take) measure the audio
     offset between the transcoded base and angle clips and stamp `sync_offset_s`
-    onto the angle entry.  import-vse.py uses it to overlap the pair on separate
+    onto the angle entry.  3-import-vse.py uses it to overlap the pair on separate
     tracks.  Both files are left untouched — nothing is muxed.
 
     `sync_offset_s` is seconds the angle starts relative to the base (positive =
@@ -423,7 +423,7 @@ def compute_external_audio_offsets(results: list[dict], output_dir: str,
     For each clip paired with an external audio file at ingest, conform the
     audio to a sibling WAV next to the transcoded MP4, measure the offset
     between them, and stamp `external_audio_conformed_path` + `external_audio_offset_s`
-    onto the entry. import-vse.py uses these to drop the audio onto a separate
+    onto the entry. 3-import-vse.py uses these to drop the audio onto a separate
     VSE track aligned with the video; the original video keeps its native audio.
 
     `external_audio_offset_s` follows the same convention as `sync_offset_s`:
@@ -686,7 +686,7 @@ def resolve_manifest(project_dir: str) -> str:
         return candidate
     die(
         f"No manifest found at: {candidate}\n"
-        f"  Run ingest.py first:  python3 ingest.py \"{project_dir}\""
+        f"  Run 1-ingest.py first:  python3 1-ingest.py \"{project_dir}\""
     )
 
 
@@ -868,7 +868,7 @@ def main():
 
     # ── Write updated manifest ───────────────────────────────────────────────
     if not args.dry_run and results:
-        # Sort by creation_time (mirrors ingest.py sort)
+        # Sort by creation_time (mirrors 1-ingest.py sort)
         def sort_key(e):
             ct = e.get("creation_time") or ""
             return (0 if ct else 1, ct, e.get("filename", ""))
@@ -898,8 +898,15 @@ def main():
         sys.exit(1)
 
     header("Next step")
-    print(f"  python3 import-vse.py \"{project_dir}\"\n")
+    print(f"  python3 3-import-vse.py \"{project_dir}\"\n")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print()
+        die("Interrupted by user (Ctrl-C).")
+    except EOFError:
+        print()
+        die("No input available (stdin closed). Pass the path as an argument instead.")
