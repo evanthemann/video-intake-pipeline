@@ -64,10 +64,17 @@ It resolves tools using the same `PATH` + fallback-hint logic the pipeline scrip
 ```bash
 python3 0-check-deps.py
 python3 0-check-deps.py --quiet    # only report problems
-python3 0-check-deps.py --addons   # also check optional add-on deps (captions/)
 ```
 
-Run it once on a new machine. It's not part of the per-project flow — the numbered steps below are.
+Its scope is the numbered pipeline only. Each optional add-on ships its own checker, so this one stays meaningful on a machine that will never install Whisper or After Effects — and so each add-on can check things a generic tool-finder can't (whether your Keyboard Maestro macros are actually *imported*, whether your whisper.cpp build has `--vad`):
+
+```bash
+python3 captions/check-deps.py
+python3 after-effects/check-deps.py
+python3 blender-km-macros/check-deps.py
+```
+
+Run these once on a new machine. They're not part of the per-project flow — the numbered steps below are.
 
 ---
 
@@ -230,7 +237,7 @@ The chain advances one number per round (`_1.blend` → `_1_cut.blend` → `_2.b
 
 ### Optional add-on: `captions/`
 
-After you've rendered your cut Blender project to MP4, [`captions/`](captions/README.md) auto-generates captions via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and either soft-embeds them as a toggleable `mov_text` track (default) or hard-burns them into a pixels-baked copy. Not part of the main pipeline — install separately (`brew install whisper-cpp`, plus a one-time `curl` for the model file) only when you want it. The script itself is stdlib-only Python, same architecture as the rest of the pipeline (orchestration shelling out to external binaries — `whisper-cli` joins `ffmpeg` / `blender` / `audio-offset-finder` in that role). Many runs just upload to YouTube and let YouTube do the captioning, so the main pipeline stays Whisper-free.
+After you've rendered your cut Blender project to MP4, [`captions/`](captions/README.md) auto-generates captions via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and either soft-embeds them as a toggleable `mov_text` track (default) or hard-burns them into a pixels-baked copy. Not part of the main pipeline — install separately (`brew install whisper-cpp`, plus a one-time `curl` for the transcription model and the Silero VAD model) only when you want it — `captions/check-deps.py` reports what's missing and which hallucination guards are active. The script itself is stdlib-only Python, same architecture as the rest of the pipeline (orchestration shelling out to external binaries — `whisper-cli` joins `ffmpeg` / `blender` / `audio-offset-finder` in that role). Many runs just upload to YouTube and let YouTube do the captioning, so the main pipeline stays Whisper-free.
 
 ### Optional add-on: `after-effects/`
 

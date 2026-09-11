@@ -16,6 +16,21 @@ Keyboard Maestro, you wouldn't place these markers at all** — you'd edit, cut,
 in Blender directly, then render with `4-render-export.py`. So this folder is all-or-nothing:
 the two scripts and the macro are one unit.
 
+## Check your setup
+
+```bash
+python3 blender-km-macros/check-deps.py
+```
+
+Verifies Keyboard Maestro is installed, the Engine is running, Blender and
+`osascript` are reachable, and `trigger.sh` is executable. Most usefully it
+reads Keyboard Maestro's own macro store to confirm the two macros are
+**actually imported** — the app being installed doesn't mean they are, and that
+gap is the one that usually bites. On Linux it reports that the whole add-on is
+unavailable and exits 0, since the core pipeline doesn't need it.
+
+The top-level `0-check-deps.py` deliberately skips this folder.
+
 ## The cutting round
 
 ```bash
@@ -41,6 +56,7 @@ Loop as many rounds as you want, then render the latest `.blend` with
 video-intake-pipeline/              ← repo root (1-ingest.py, 2-transcode.py, …)
 └── blender-km-macros/
     ├── README.md
+    ├── check-deps.py                              # preflight: KM installed AND macros imported
     ├── validate-markers.py                        # step 1 of the round: validate F/u pairs
     ├── remove-markers.py                          # step 3 of the round: wipe markers, bump number
     ├── macros/

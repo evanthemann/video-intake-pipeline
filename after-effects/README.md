@@ -58,6 +58,21 @@ brew install --cask blender   # already required by the main pipeline
 After Effects: any reasonably modern version supports the ExtendScript
 in `import_blender.jsx`. No version-specific gotchas observed.
 
+### Check your setup
+
+```bash
+python3 after-effects/check-deps.py
+```
+
+Checks the two halves separately, because they have different requirements:
+the **export half** needs only Blender and runs anywhere, while the **import
+half** needs After Effects. A missing AE is reported as "import half
+unavailable here", not as a failure — exporting JSON on one machine to open on
+another is a perfectly good workflow. AE is found by globbing the versioned
+install path, so a new Adobe release year doesn't break detection.
+
+The top-level `0-check-deps.py` deliberately skips this folder.
+
 ---
 
 ## Usage
@@ -100,6 +115,7 @@ under **File > Scripts** directly — no "Run Script File…" step needed.
 ```
 after-effects/
 ├── README.md             ← this file
+├── check-deps.py         ← preflight: Blender for the export half, AE for the import half
 ├── export-to-ae.py       ← stdlib Python, runs Blender headlessly with an embedded
 │                           Blender Python payload
 └── import_blender.jsx    ← After Effects ExtendScript

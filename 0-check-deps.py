@@ -3,19 +3,26 @@
 """
 0-check-deps.py — Preflight dependency check for the Video Intake & Blender VSE Pipeline
 
-Verifies every external tool the pipeline shells out to is installed and
+Verifies every external tool the core pipeline shells out to is installed and
 reachable, before you discover it missing halfway through a long transcode.
 Reports each tool's resolved path and version, separates required from
 optional, and prints the install command for anything missing.
+
+Scope is the numbered pipeline only (steps 1–4). The optional add-ons each
+ship their own checker, so this one stays meaningful on a machine that will
+never install Whisper or After Effects:
+
+    captions/check-deps.py
+    after-effects/check-deps.py
+    blender-km-macros/check-deps.py
 
 Exits non-zero if a required tool is missing, so it can gate a setup script.
 
 Usage:
     python3 0-check-deps.py
     python3 0-check-deps.py --quiet     # only report problems
-    python3 0-check-deps.py --addons    # also check optional add-on deps
 
-Platform: macOS primary, Linux Mint compatible.
+Platform: macOS and Linux.
 """
 
 # This is the one script that must run on whatever Python a new machine has,
@@ -74,7 +81,8 @@ BREW = "brew install" if IS_MACOS else "sudo apt install"
 
 class Dep:
     def __init__(self, name, purpose, install, version_args=None,
-                 hints=None, required=True, macos_only=False, module=None):
+                 hints=None, required=True, macos_only=False, module=None,
+                 skip_reason=None):
         self.name = name
         self.purpose = purpose
         self.install = install
@@ -85,6 +93,9 @@ class Dep:
         self.required = required
         self.macos_only = macos_only
         self.module = module          # python module name, checked via import
+        # Why a macos_only dep is skipped on Linux — the Linux answer differs
+        # per tool, so each one says its own.
+        self.skip_reason = skip_reason or "macOS only"
 
 
 CORE_DEPS = [
@@ -105,7 +116,8 @@ CORE_DEPS = [
         version_args=["--version"], hints=BLENDER_HINTS),
     Dep("avconvert", "iPhone HDR → SDR (macOS only; Linux uses ffmpeg zscale)",
         "built in at /usr/bin/avconvert", version_args=[],
-        hints=["/usr/bin/avconvert"], macos_only=True),
+        hints=["/usr/bin/avconvert"], macos_only=True,
+        skip_reason="macOS only — Linux uses the ffmpeg zscale fallback"),
 ]
 
 OPTIONAL_DEPS = [
@@ -114,12 +126,6 @@ OPTIONAL_DEPS = [
         "pip install audio-offset-finder", required=False,
         module="audio_offset_finder"),
 ]
-
-ADDON_DEPS = [
-    Dep("whisper-cli", "auto-captions (captions/ add-on)",
-        f"{BREW} whisper-cpp", required=False),
-]
-
 
 def resolve(dep: Dep) -> str | None:
     found = shutil.which(dep.name)
@@ -168,7 +174,7 @@ def check(dep: Dep, quiet: bool) -> bool:
     """Returns True if satisfied (or not applicable on this platform)."""
     if dep.macos_only and not IS_MACOS:
         if not quiet:
-            say(f"  – {dep.name}: skipped (macOS only — Linux uses the ffmpeg fallback)")
+            say(f"  – {dep.name}: skipped ({dep.skip_reason})")
         return True
 
     path = resolve(dep)
@@ -200,8 +206,6 @@ def main():
     )
     parser.add_argument("--quiet", "-q", action="store_true",
                         help="Only report problems, not tools that are present")
-    parser.add_argument("--addons", action="store_true",
-                        help="Also check optional add-on dependencies (captions/)")
     args = parser.parse_args()
 
     global QUIET
@@ -240,11 +244,6 @@ def main():
     for dep in OPTIONAL_DEPS:
         check(dep, args.quiet)
 
-    if args.addons:
-        section("Add-ons")
-        for dep in ADDON_DEPS:
-            check(dep, args.quiet)
-
     header("Result")
     if missing_required:
         names = ", ".join(d.name for d in missing_required)
@@ -262,6 +261,14 @@ def main():
     ok("All required tools present.\n")
     say("Next step:")
     print("  python3 1-ingest.py /path/to/footage\n")
+
+    if not QUIET:
+        say("Optional add-ons check their own dependencies, so this stays "
+            "limited to the core pipeline:")
+        print("  python3 captions/check-deps.py")
+        print("  python3 after-effects/check-deps.py")
+        print("  python3 blender-km-macros/check-deps.py")
+        print()
 
 
 if __name__ == "__main__":
