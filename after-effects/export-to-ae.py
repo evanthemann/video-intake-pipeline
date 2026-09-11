@@ -101,7 +101,7 @@ def find_blender(override: str | None = None) -> str:
 # ---------------------------------------------------------------------------
 # Blender Python payload (embedded — written to a temp file at run time and
 # fed to `blender -b <blend> --python <tempfile>`, matching the pattern used
-# by import-vse.py, vse-validate-markers.py, and vse-remove-markers.py).
+# by 3-import-vse.py, blender-km-macros/validate-markers.py, and blender-km-macros/remove-markers.py).
 #
 # Walks the VSE timeline of whatever .blend Blender opened, writes a sibling
 # JSON, and prints `WROTE: <path>` so the wrapper can pluck the path back.

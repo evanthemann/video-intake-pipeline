@@ -12,8 +12,9 @@ _ingest/
 *.blend1
 blender_import.log
 
-# Locally rendered guide PDFs (HTML is the canonical source in the repo)
+# Locally rendered guides (README.md is the canonical source in the repo)
 *.pdf
+*.html
 
 # Personal / not-for-repo
 label.py

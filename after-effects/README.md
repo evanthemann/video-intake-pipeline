@@ -29,13 +29,13 @@ next-step hint).
    MOVIE strip's source path, timeline placement, in/out points,
    channel, scale, and translation. The Blender-side payload is embedded
    inside `export-to-ae.py` as a template string and written to a temp
-   file at invocation time — the same pattern `import-vse.py`,
-   `vse-validate-markers.py`, and `vse-remove-markers.py` already use.
+   file at invocation time — the same pattern `3-import-vse.py`,
+   `blender-km-macros/validate-markers.py`, and `blender-km-macros/remove-markers.py` already use.
 2. `import_blender.jsx`, run inside After Effects, prompts for that
    JSON, creates a comp called **`Blender_VSE`** at the right dimensions
    and frame rate, and adds every clip as a layer at its timeline
    position — sorted bottom-to-top by Blender's VSE channel order so the
-   per-camera lane routing from `import-vse.py` carries through to AE's
+   per-camera lane routing from `3-import-vse.py` carries through to AE's
    layer stack.
 
 The pipeline's existing chain works for you: each round of cuts
