@@ -24,6 +24,7 @@ Platform: macOS primary, Linux Mint compatible.
 """
 
 import argparse
+import glob
 import os
 import re
 import subprocess
@@ -70,20 +71,44 @@ def prompt_for_blend() -> str:
 # ---------------------------------------------------------------------------
 
 BLENDER_HINTS = [
-    "/Applications/Blender.app/Contents/MacOS/Blender",
-    "/usr/bin/blender",
+    "/Applications/Blender.app/Contents/MacOS/Blender",   # macOS default
+    "/usr/bin/blender",                                   # Linux distro package
     "/usr/local/bin/blender",
+    "/snap/bin/blender",
+    # Glob patterns. Extracting the official tarball is the normal way to run a
+    # current Blender on Linux, since distro packages lag by years — those land
+    # at versioned paths a fixed list can never cover.
+    os.path.expanduser("~/opt/blender-*/blender"),
+    os.path.expanduser("~/blender-*/blender"),
     os.path.expanduser("~/blender/blender"),
+    "/opt/blender-*/blender",
+    "/usr/local/blender-*/blender",
 ]
+
+def resolve_hint(hints):
+    """
+    First hint resolving to an executable, in hint order so priority is kept.
+
+    Entries may be glob patterns — see BLENDER_HINTS. When one pattern matches
+    several installs, the highest version number in the path wins, so a machine
+    with both blender-3.6 and blender-4.5 unpacked gets 4.5.
+    """
+    for pattern in hints:
+        if not pattern:
+            continue
+        matches = [p for p in glob.glob(pattern)
+                   if os.path.isfile(p) and os.access(p, os.X_OK)]
+        if matches:
+            return max(matches,
+                       key=lambda p: [int(n) for n in re.findall(r"\d+", p)])
+    return None
+
 
 def find_blender() -> str:
     import shutil
     found = shutil.which("blender")
     if not found:
-        for h in BLENDER_HINTS:
-            if h and os.path.isfile(h) and os.access(h, os.X_OK):
-                found = h
-                break
+        found = resolve_hint(BLENDER_HINTS)
     if not found:
         die(
             "blender not found on PATH or at common locations.\n"

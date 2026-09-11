@@ -27,6 +27,7 @@ import argparse
 import glob
 import os
 import platform
+import re
 import shutil
 import sys
 
@@ -51,11 +52,38 @@ IS_MACOS = platform.system() == "Darwin"
 AE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 BLENDER_HINTS = [
-    "/Applications/Blender.app/Contents/MacOS/Blender",
-    "/usr/bin/blender",
+    "/Applications/Blender.app/Contents/MacOS/Blender",   # macOS default
+    "/usr/bin/blender",                                   # Linux distro package
     "/usr/local/bin/blender",
+    "/snap/bin/blender",
+    # Glob patterns. Extracting the official tarball is the normal way to run a
+    # current Blender on Linux, since distro packages lag by years — those land
+    # at versioned paths a fixed list can never cover.
+    os.path.expanduser("~/opt/blender-*/blender"),
+    os.path.expanduser("~/blender-*/blender"),
     os.path.expanduser("~/blender/blender"),
+    "/opt/blender-*/blender",
+    "/usr/local/blender-*/blender",
 ]
+
+def resolve_hint(hints):
+    """
+    First hint resolving to an executable, in hint order so priority is kept.
+
+    Entries may be glob patterns — see BLENDER_HINTS. When one pattern matches
+    several installs, the highest version number in the path wins, so a machine
+    with both blender-3.6 and blender-4.5 unpacked gets 4.5.
+    """
+    for pattern in hints:
+        if not pattern:
+            continue
+        matches = [p for p in glob.glob(pattern)
+                   if os.path.isfile(p) and os.access(p, os.X_OK)]
+        if matches:
+            return max(matches,
+                       key=lambda p: [int(n) for n in re.findall(r"\d+", p)])
+    return None
+
 
 # Adobe installs to a path carrying the version year, so glob it rather than
 # pinning a year that goes stale every autumn.
@@ -69,10 +97,7 @@ def find_binary(name: str, hints: list[str]) -> str | None:
     found = shutil.which(name)
     if found:
         return found
-    for h in hints:
-        if h and os.path.isfile(h) and os.access(h, os.X_OK):
-            return h
-    return None
+    return resolve_hint(hints)
 
 
 def find_after_effects() -> list[str]:
