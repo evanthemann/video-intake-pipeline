@@ -44,12 +44,32 @@ Raw footage (iPhone · GoPro · OBS · Canon · iVue · DJI · stills)
 | ImageMagick `convert` + `identify` | image padding, dimension reads | `brew install imagemagick` |
 | `exiftool` | EXIF orientation + timestamps on images; camera make/model detection on video | `brew install exiftool` |
 | `blender` | headless VSE import, marker scripts, render | [blender.org](https://blender.org) or `brew install --cask blender` |
-| `audio-offset-finder` | *optional* — sync external audio to video, align two camera angles. Only needed for external-audio or camera-sync pairing | `pip install audio-offset-finder` |
+| `audio-offset-finder` | *optional* — sync external audio to video, align two camera angles. Only needed for external-audio or camera-sync pairing | `pipx install audio-offset-finder` then `pipx ensurepath`, then a new terminal (pipx itself: `brew install pipx`) |
 | Keyboard Maestro | *optional, macOS only* — the `blender-km-macros/` cutting round | [keyboardmaestro.com](https://www.keyboardmaestro.com/) · setup in [`blender-km-macros/`](blender-km-macros/README.md) |
 
 Run `python3 0-check-deps.py` to verify all of the above at once rather than checking by hand.
 
-Linux Mint: replace `avconvert` with ffmpeg zscale tone-map (handled automatically). `exiftool` via `sudo apt install libimage-exiftool-perl`.
+> **`audio-offset-finder` via pipx, not `pip install`.** The pipeline shells out to the
+> `audio-offset-finder` *command*, so it only matters that the command is on `PATH`.
+> A plain `pip install` drops it into whichever interpreter that particular `pip`
+> belongs to — on a machine with several Pythons (Homebrew 3.11 *and* 3.14, plus
+> system 3.9) that is routinely not the one you run the pipeline with, and the
+> install "succeeds" while the command never appears. pipx gives it an isolated venv
+> and a `PATH` entry, so it works regardless of interpreter. It also needs no write
+> access to the Homebrew prefix, which matters on a shared Mac: a non-admin account
+> can use a pipx that's already installed even though `brew install` would fail for
+> it. Check-deps only tells you to install pipx when you don't already have it.
+>
+> `pipx install` on its own isn't enough: pipx puts the command in `~/.local/bin`,
+> which isn't on `PATH` by default on macOS, so the package installs and stays
+> invisible. `pipx ensurepath` fixes that, and since it edits your shell config you
+> need a **new terminal** before the change takes. Check-deps spells out all three
+> steps when the tool is missing.
+>
+> Check-deps prints the interpreter it's using in its header — compare that to
+> `pip3 -V` if something installed but isn't being found.
+
+Linux Mint: replace `avconvert` with ffmpeg zscale tone-map (handled automatically). `exiftool` via `sudo apt install libimage-exiftool-perl`, `pipx` via `sudo apt install pipx`.
 
 ---
 

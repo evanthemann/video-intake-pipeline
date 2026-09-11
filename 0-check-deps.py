@@ -107,10 +107,46 @@ def resolve_hint(hints):
 
 BREW = "brew install" if IS_MACOS else "sudo apt install"
 
+# Only relevant when pipx isn't already here — see pipx_hint().
+GET_PIPX = "brew install pipx" if IS_MACOS else "sudo apt install pipx"
+
+
+# Continuation indent for multi-line install instructions, so line 2 onward
+# lands under line 1 rather than at the left margin.
+INSTALL_INDENT = " " * len("    install:  ")
+
+
+def pipx_hint(package: str) -> str:
+    """
+    Install steps for a pipx-managed CLI, assuming nothing about who's running.
+
+    Two things this has to get right that a one-liner doesn't:
+
+    A non-admin account can have a perfectly working pipx on PATH while
+    `brew install` fails outright, because the Homebrew prefix belongs to
+    another user. Telling that person to install pipx is both wrong and
+    impossible, so only say it when pipx is genuinely absent.
+
+    And `pipx install` alone is not enough to make this check pass. pipx puts
+    the command in ~/.local/bin, which is not on PATH by default on macOS, so
+    without `pipx ensurepath` the package installs and stays invisible to both
+    this script and 2-transcode.py — the exact dead end the pip instructions
+    used to lead people into. ensurepath edits the shell config, so it also
+    takes a new shell to matter; name the re-run command explicitly, rather
+    than letting someone re-run in the same terminal and conclude it failed.
+    """
+    steps = [] if shutil.which("pipx") else [GET_PIPX]
+    steps += [
+        f"pipx install {package}",
+        "pipx ensurepath",
+        "then open a new terminal and re-run: python3 0-check-deps.py",
+    ]
+    return ("\n" + INSTALL_INDENT).join(steps)
+
 
 class Dep:
     def __init__(self, name, purpose, install, version_args=None,
-                 hints=None, required=True, macos_only=False, module=None,
+                 hints=None, required=True, macos_only=False,
                  skip_reason=None):
         self.name = name
         self.purpose = purpose
@@ -121,7 +157,6 @@ class Dep:
         self.hints = hints or []
         self.required = required
         self.macos_only = macos_only
-        self.module = module          # python module name, checked via import
         # Why a macos_only dep is skipped on Linux — the Linux answer differs
         # per tool, so each one says its own.
         self.skip_reason = skip_reason or "macOS only"
@@ -150,10 +185,19 @@ CORE_DEPS = [
 ]
 
 OPTIONAL_DEPS = [
+    # pipx, not pip. 2-transcode.py shells out to the `audio-offset-finder`
+    # *command* (find_audio_offset), so what matters is that command landing on
+    # PATH — not which interpreter's site-packages holds the module. `pip
+    # install` puts it wherever that particular pip points, and on a machine
+    # with several Pythons that is routinely not the one running the pipeline:
+    # the install succeeds, the command never appears, and step 2 dies anyway.
+    # pipx gives the tool its own venv plus a PATH entry, so it works no matter
+    # which python3 you run things with — and unlike brew, it needs no write
+    # access to a prefix someone else owns.
     Dep("audio-offset-finder",
         "sync external audio / align two camera angles (steps 1–2 pairing)",
-        "pip install audio-offset-finder", required=False,
-        module="audio_offset_finder"),
+        pipx_hint("audio-offset-finder"),
+        required=False),
 ]
 
 def resolve(dep: Dep) -> str | None:
@@ -185,18 +229,6 @@ def probe_version(path: str, dep: Dep) -> str:
     return line[:72]
 
 
-def check_module(dep: Dep) -> bool:
-    """audio-offset-finder ships a CLI, but installs can leave only the module.
-    Either one counts as present."""
-    if not dep.module:
-        return False
-    try:
-        __import__(dep.module)
-        return True
-    except Exception:
-        return False
-
-
 def check(dep: Dep, quiet: bool) -> bool:
     """Returns True if satisfied (or not applicable on this platform)."""
     if dep.macos_only and not IS_MACOS:
@@ -210,11 +242,6 @@ def check(dep: Dep, quiet: bool) -> bool:
             version = probe_version(path, dep)
             suffix = f"  [{version}]" if version else ""
             ok(f"{dep.name}: {path}{suffix}")
-        return True
-
-    if check_module(dep):
-        if not quiet:
-            ok(f"{dep.name}: python module '{dep.module}' importable")
         return True
 
     if dep.required:
