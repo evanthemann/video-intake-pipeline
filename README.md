@@ -287,6 +287,49 @@ The chain advances one number per round (`_1.blend` → `_1_cut.blend` → `_2.b
 
 After you've rendered your cut Blender project to MP4, [`captions/`](captions/README.md) auto-generates captions via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and either soft-embeds them as a toggleable `mov_text` track (default) or hard-burns them into a pixels-baked copy. Not part of the main pipeline — install separately (`brew install whisper-cpp`, plus a one-time `curl` for the transcription model and the Silero VAD model) only when you want it — `captions/check-deps.py` reports what's missing and which hallucination guards are active. The script itself is stdlib-only Python, same architecture as the rest of the pipeline (orchestration shelling out to external binaries — `whisper-cli` joins `ffmpeg` / `blender` / `audio-offset-finder` in that role). Many runs just upload to YouTube and let YouTube do the captioning, so the main pipeline stays Whisper-free.
 
+### Repair tool: `tools/fix-camera-clock.py`
+
+For a card shot with a wrong camera clock — never set, or reset by a dead battery. Not part of
+a normal run; use it **before** `1-ingest.py` when a camera's dates are obviously wrong.
+
+This matters more than it looks. Ingest trusts GoPro / iPhone / DJI clips as true UTC and never
+corrects them, so a card with a bad clock sorts years away from everything else and stacks at
+the front of the timeline. The fix shifts every embedded timestamp by one fixed amount, so
+clips keep their true *relative* spacing and land in the right place in the batch.
+
+Give it one clip and when that clip was really recorded:
+
+```bash
+# dry run — prints a before/after table, writes nothing
+./tools/fix-camera-clock.py /path/to/100GOPRO --anchor GX010346.MP4 --actual "2026-09-05 10:05"
+
+# apply
+./tools/fix-camera-clock.py /path/to/100GOPRO --anchor GX010346.MP4 --actual "2026-09-05 10:05" --apply
+```
+
+**Read the anchor time from the camera, not from Finder.** MP4 stores creation time as UTC and
+Finder renders it using the timezone rules *for the stored date* — so a clip whose bogus date
+falls in January is displayed with winter-time rules even though it was really shot in summer,
+putting Finder's reading an hour out. `--actual` is local wall-clock (`--tz` to override), and
+the offset is computed in UTC, so the result is right regardless of what anything displays.
+
+| Flag | Description |
+|---|---|
+| `--anchor` / `--actual` | Reference clip and its true recording time. |
+| `--offset` | Explicit shift instead of an anchor, e.g. `'0:0:3897 20:20:0'` (`Y:M:D h:m:s`). |
+| `--tz` | Timezone `--actual` is in. Default: this machine's current offset. |
+| `--before` | Only shift clips stored earlier than this date. Default: one year after the anchor's stored date — which selects the bad-clock clips and leaves correctly-dated ones alone. |
+| `--apply` | Actually write. **Dry run is the default.** |
+| `--allow-synced` | Permit running inside a cloud-synced folder. Refused by default, since rewriting there edits the master copy and re-uploads every file. |
+| `--skip-telemetry-check` | Skip hashing GoPro GPMF telemetry before/after. Faster, weaker evidence. |
+
+Every applied run verifies each file afterward: the new timestamp is what was predicted, the
+file size and stream layout are unchanged, the container still parses, and GoPro GPMF telemetry
+hashes identically. Any failure is listed and the run exits non-zero. Clips with no readable
+timestamp (a corrupt file, say) are reported and left alone rather than guessed at.
+
+The shift is exactly invertible — every run prints the `--offset` that undoes it.
+
 ### Optional add-on: `after-effects/`
 
 For shoots that get cut in Blender (fastest for raw-footage trim work via the KM macro) but finished in After Effects (titles, motion graphics, finer compositing), [`after-effects/`](after-effects/README.md) exports your final `<project>_<N>.blend` timeline to JSON and rebuilds it as an AE composition called `Blender_VSE`. Stdlib-only Python wrapper that runs Blender headlessly, plus an ExtendScript that AE runs on the JSON. Per-clip timeline placement, in/out points, scale, and translation all carry through; the Blender VSE channel becomes the AE layer stack order, so the per-camera lane routing from `3-import-vse.py` survives the round trip. Not part of the main pipeline — only used when you finish in AE.
