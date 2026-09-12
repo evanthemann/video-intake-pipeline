@@ -215,13 +215,37 @@ python3 2-transcode.py          # prompted — supports drag-and-drop
 
 Reads `manifest_transcoded.json`, prompts for project name and resolution, then launches Blender headlessly to create a `.blend` file with all clips placed on the VSE timeline in chronological order. Applies the Video Editing workspace layout and writes `blender_import.log`.
 
-**Open-file limit.** Blender keeps a file handle open for every movie strip, and macOS ships a
-soft limit of 256. A project with more clips than that dies partway through the import with a
-misleading per-file error — `swscale can't transform from pixel format yuv420p to rgba` and
-`could not be loaded` on whichever clip happened to land where the descriptors ran out. That
-clip is fine; any clip in that position would fail. The script now raises the limit before
-launching Blender (two handles per clip plus headroom, capped to `kern.maxfilesperproc`), and
-warns with the exact `ulimit -n` to run if it cannot.
+**Batched import (large projects).** Every movie strip holds an open ffmpeg decoder — roughly
+35 MB each — so importing a large project in a single Blender process exhausts RAM. Measured on
+a 360-clip project: memory climbed to 9.6 GB and flatlined, after which *every* remaining clip
+came back as a 1-frame placeholder. The symptom points at the wrong thing — a per-file
+`swscale can't transform from pixel format yuv420p to rgba` / `could not be loaded` on whichever
+clip happened to be next. That clip is fine; it imports normally on its own and at an earlier
+position.
+
+Imports therefore run in batches (`--batch-size`, default 100), each in its own Blender process.
+Reopening the `.blend` does not re-open the decoders, so peak memory tracks batch size rather
+than total clip count. Each batch reports the frame the next one should start on, so the
+timeline stays continuous. Use `--batch-size 0` to force a single process.
+
+Two related details, both load-bearing:
+
+- A resumed batch is given the `.blend` **on Blender's command line**, never via
+  `wm.open_mainfile()` from inside the running script — replacing the open file frees the
+  context that script is executing in, which segfaults Blender.
+- A resumed batch skips the UI-context setup (retyping a `SEQUENCE_EDITOR` area, building a
+  `temp_override`, `view_all()`). A `.blend` saved in background mode has a degenerate screen
+  layout, and manipulating it segfaults. None of it is needed for the import itself, since
+  strips are created through the direct RNA API rather than `bpy.ops.sequencer.*_strip_add`.
+
+**Open-file limit.** Blender also keeps a file handle per strip, and macOS ships a soft limit of
+256 — a secondary constraint that bit at 254 clips before the memory ceiling did. The script
+raises it before launching Blender (two handles per clip plus headroom, capped to
+`kern.maxfilesperproc`) and warns with the exact `ulimit -n` if it cannot.
+
+**Failures are never silent.** `sequences.new_movie()` does not raise when Blender cannot read
+the media; it returns a 1-frame placeholder. The import now checks every strip's duration and
+fails loudly, rather than writing a `.blend` that looks complete but has silently dropped clips.
 
 **Per-camera channel routing.** Every strip from the same physical camera lands on a shared VSE channel so per-camera mute/solo is one click. The routing key is the entry's `camera_model` (e.g. `Canon EOS 7D`, `Canon VIXIA HF R40`, `iPhone 16 Pro`, `HERO12 Black`, `DJI Mini4 Pro`), falling back to `source` for clips with no exposed model (OBS, anything without EXIF Make/Model) — so a Canon 7D and a Canon VIXIA never collide on one lane even though both report `source: "canon"`. Cameras fill channel pairs from ch1 upward in first-seen chronological order; whichever camera shoots first claims ch1/2. OBS is special-cased to always pin to ch1/2 (the bottom row) if any OBS clip is present, regardless of batch order, so the screen capture sits below the paired camera in a sync pair. External-audio sources (`zoom`, `voice-memo`, or a file-extension bucket — set by `1-ingest.py` from filename pattern + ffprobe handler tag) fill single channels above the highest camera pair. Channels are stable within a project: a second clip from the same camera lands on the same lane as the first, even if other cameras appear in between.
 
