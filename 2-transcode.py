@@ -60,6 +60,125 @@ def skip(msg):   print(_c("0;35",  f"↩ {msg}"))
 
 
 # ---------------------------------------------------------------------------
+# Output naming and provenance
+# ---------------------------------------------------------------------------
+#
+# Every source file must get its own output. Naming outputs after the stem
+# alone silently loses files: IMG_1234.HEIC and IMG_1234.MOV (a Live Photo),
+# or the same filename in two camera folders, all collapse onto IMG_1234.mp4 —
+# and the second one hits "already exists" and is skipped, leaving a manifest
+# entry pointing at a different file's video.
+#
+# 1-ingest.py now collapses Live Photos and duplicates, so most collisions are
+# gone before we get here. This is the backstop for the rest: genuinely
+# different files that happen to share a name.
+
+INDEX_FILENAME = ".transcode_index.json"
+
+
+def _flatten(rel_dir: str) -> str:
+    """Turn a relative folder path into a filename-safe prefix."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", rel_dir.strip("./\\")).strip("-")
+    return cleaned
+
+
+def assign_output_names(entries: list[dict], input_dir: str) -> dict[str, str]:
+    """
+    Map each entry's source path to a unique output basename.
+
+    Deterministic: the same manifest always yields the same names, so re-runs
+    reuse existing work. Unique names are tried in order of increasing ugliness
+    so the common case stays clean, and each step names the thing that actually
+    differs:
+
+        IMG_1234.mp4                  (no collision — the usual case)
+        IMG_1234_heic.mp4             (same folder, different file type)
+        iphoneEvan__IMG_1234.mp4      (same name in two folders)
+        iphoneEvan__IMG_1234_heic.mp4 (both at once)
+        …__2.mp4                      (last resort)
+    """
+    taken: dict[str, str] = {}          # basename -> source path
+    assigned: dict[str, str] = {}       # source path -> basename
+
+    for e in entries:
+        src = e["path"]
+        rel = os.path.relpath(src, input_dir)
+        rel_dir = os.path.dirname(rel)
+        stem = Path(src).stem
+        ext = Path(src).suffix.lstrip(".").lower()
+
+        prefix = _flatten(rel_dir)
+        candidates = [f"{stem}.mp4"]
+        # An extension suffix only disambiguates when the file already holding
+        # the plain name has a *different* extension — otherwise it says nothing
+        # and the folder is the real difference.
+        holder = taken.get(f"{stem}.mp4")
+        if holder and Path(holder).suffix.lower() != f".{ext}":
+            candidates.append(f"{stem}_{ext}.mp4")
+        if prefix:
+            candidates.append(f"{prefix}__{stem}.mp4")
+            candidates.append(f"{prefix}__{stem}_{ext}.mp4")
+        candidates.append(f"{stem}_{ext}.mp4")
+
+        chosen = None
+        for cand in candidates:
+            if taken.get(cand) in (None, src):
+                chosen = cand
+                break
+        if chosen is None:
+            base = candidates[-1][:-4]
+            n = 2
+            while f"{base}__{n}.mp4" in taken:
+                n += 1
+            chosen = f"{base}__{n}.mp4"
+
+        taken[chosen] = src
+        assigned[src] = chosen
+
+    return assigned
+
+
+def load_transcode_index(output_dir: str) -> dict:
+    """Read the output→source provenance index, or an empty one."""
+    path = os.path.join(output_dir, INDEX_FILENAME)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_transcode_index(output_dir: str, index: dict) -> None:
+    try:
+        with open(os.path.join(output_dir, INDEX_FILENAME), "w", encoding="utf-8") as f:
+            json.dump(index, f, indent=2)
+    except OSError as e:
+        warn(f"  could not write transcode index: {e}")
+
+
+def source_fingerprint(path: str) -> dict:
+    try:
+        st = os.stat(path)
+        return {"source": os.path.abspath(path), "size": st.st_size, "mtime": int(st.st_mtime)}
+    except OSError:
+        return {"source": os.path.abspath(path), "size": None, "mtime": None}
+
+
+def can_skip(dst: str, src: str, index: dict) -> bool:
+    """
+    True only if dst already exists AND was produced from this exact source,
+    unchanged since. A bare os.path.isfile() check is what allowed one file's
+    output to be silently claimed by another.
+    """
+    if not os.path.isfile(dst):
+        return False
+    rec = index.get(os.path.basename(dst))
+    if not rec:
+        return False                      # unknown provenance — redo it
+    return rec == source_fingerprint(src)
+
+
+# ---------------------------------------------------------------------------
 # Tool discovery
 # ---------------------------------------------------------------------------
 
@@ -799,10 +918,23 @@ def main():
     skipped   = 0
     total     = len(entries)
 
+    # One unique output name per source, plus the provenance index that makes
+    # "already exists" mean "already built from THIS file".
+    out_names = assign_output_names(entries, input_dir)
+    index     = load_transcode_index(output_dir)
+
+    renamed = [(e["filename"], out_names[e["path"]]) for e in entries
+               if out_names[e["path"]] != Path(e["filename"]).stem + ".mp4"]
+    if renamed:
+        say(f"  {len(renamed)} output(s) disambiguated to avoid overwriting each other:")
+        for orig, new in renamed:
+            say(f"      {orig}  →  {new}")
+        print()
+
     for idx, entry in enumerate(entries, 1):
         src      = entry["path"]
         basename = entry["filename"]
-        stem     = Path(basename).stem
+        out_name = out_names[src]
         mtype    = entry["media_type"]
         prefix   = f"[{idx}/{total}]"
 
@@ -815,9 +947,9 @@ def main():
 
         # ── Images ──────────────────────────────────────────────────────────
         if mtype == "image":
-            dst = os.path.join(output_dir, stem + ".mp4")
-            if os.path.isfile(dst):
-                skip(f"  already exists: {os.path.basename(dst)}")
+            dst = os.path.join(output_dir, out_name)
+            if can_skip(dst, src, index):
+                skip(f"  already built from this file: {os.path.basename(dst)}")
                 skipped += 1
                 results.append(output_entry(entry, dst, ffprobe_bin))
                 continue
@@ -825,6 +957,7 @@ def main():
             success = convert_image_to_video(src, dst, convert_bin, ffmpeg_bin, args.dry_run)
             if success and not args.dry_run:
                 succeeded += 1
+                index[out_name] = source_fingerprint(src)
                 results.append(output_entry(entry, dst, ffprobe_bin))
             elif success and args.dry_run:
                 succeeded += 1
@@ -835,9 +968,9 @@ def main():
 
         # ── Videos ──────────────────────────────────────────────────────────
         elif mtype == "video":
-            dst = os.path.join(output_dir, stem + ".mp4")
-            if os.path.isfile(dst):
-                skip(f"  already exists: {os.path.basename(dst)}")
+            dst = os.path.join(output_dir, out_name)
+            if can_skip(dst, src, index):
+                skip(f"  already built from this file: {os.path.basename(dst)}")
                 skipped += 1
                 results.append(output_entry(entry, dst, ffprobe_bin))
                 continue
@@ -845,6 +978,7 @@ def main():
             success = transcode_video(entry, dst, ffmpeg_bin, avconvert_bin, ffprobe_bin, args.fps, args.dry_run, not args.no_loudnorm)
             if success and not args.dry_run:
                 succeeded += 1
+                index[out_name] = source_fingerprint(src)
                 results.append(output_entry(entry, dst, ffprobe_bin))
             elif success and args.dry_run:
                 succeeded += 1
@@ -857,6 +991,19 @@ def main():
             failed += 1
 
         print()  # blank line between files
+
+    if not args.dry_run:
+        save_transcode_index(output_dir, index)
+
+    # Every manifest entry must point at its own file. If this ever trips, a
+    # clip is about to be placed on the timeline twice while another is lost.
+    seen: dict[str, str] = {}
+    for e in results:
+        p = e.get("path", "")
+        if p in seen:
+            warn(f"  collision: {os.path.basename(p)} is claimed by both "
+                 f"{seen[p]} and {e.get('filename')}")
+        seen[p] = e.get("filename", "?")
 
     # ── Measure camera-sync offsets (two angles kept as separate files) ──────
     if not args.dry_run and results:

@@ -22,13 +22,14 @@ Platform: macOS primary, Linux Mint compatible.
 """
 
 import argparse
+import filecmp
 import json
 import math
 import os
 import re
 import subprocess
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 
 # ---------------------------------------------------------------------------
@@ -115,6 +116,42 @@ def exiftool_make_model(path: str) -> tuple[str | None, str | None]:
     make = entry.get("Make") or None
     model = entry.get("Model") or None
     return make, model
+
+
+def exiftool_content_identifiers(paths: list[str]) -> dict[str, str]:
+    """
+    Read Apple's ContentIdentifier for many files in one exiftool call.
+
+    This UUID is the key to two otherwise-invisible problems:
+
+      1. A Live Photo is stored as two files (IMG_1234.HEIC + IMG_1234.MOV)
+         that share one identifier — that is what pairs them, not the filename.
+      2. The identifier survives AirDrop, so the same photo copied between two
+         phones carries it into both folders even though the bytes differ
+         (AirDrop re-compresses).
+
+    Returns {abspath: identifier} for files that carry one. Files without the
+    tag (GoPro, non-Live photos, anything non-Apple) are simply absent.
+    """
+    if not paths:
+        return {}
+    try:
+        result = subprocess.run(
+            ["exiftool", "-ContentIdentifier", "-j", "-@", "-"],
+            input="\n".join(paths), capture_output=True, text=True, timeout=300
+        )
+        data = json.loads(result.stdout or "[]")
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    except Exception:
+        return {}
+    out = {}
+    for item in data:
+        cid = item.get("ContentIdentifier")
+        src = item.get("SourceFile")
+        if cid and src:
+            out[os.path.abspath(src)] = str(cid)
+    return out
 
 
 def detect_source(path: str, ffprobe_tags: dict,
@@ -636,11 +673,120 @@ def inspect_file(path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Live Photos and duplicates
+# ---------------------------------------------------------------------------
+
+def _quality_rank(e: dict) -> tuple:
+    """Sort key for picking the best survivor of a duplicate group: biggest
+    pixel count first, then largest file (AirDrop re-compresses, so the bigger
+    copy is the less-degraded original)."""
+    px = (e.get("width") or 0) * (e.get("height") or 0)
+    return (px, e.get("size_bytes") or 0)
+
+
+def _identical_bytes(a: str, b: str) -> bool:
+    """True if two files have identical content. Only ever called on files that
+    already share a byte size, so it is cheap in practice."""
+    try:
+        return filecmp.cmp(a, b, shallow=False)
+    except OSError:
+        return False
+
+
+def dedupe_entries(entries: list[dict],
+                   content_ids: dict[str, str]) -> tuple[list[dict], list[dict]]:
+    """
+    Collapse Live Photo pairs and duplicate copies of the same shot.
+
+    Two distinct problems, one key. Apple's ContentIdentifier groups:
+      * a Live Photo's still + motion file (different media types, one shot)
+      * the same photo AirDropped between phones (same shot, different bytes)
+
+    Policy:
+      * Live Photo  -> keep the still, drop the motion file. The pair is one
+        moment; without this it lands on the timeline twice.
+      * Duplicates  -> keep the best copy (see _quality_rank), drop the rest.
+
+    Files with no ContentIdentifier (GoPro, non-Live photos, non-Apple gear)
+    fall back to exact-byte duplicate detection, compared only within
+    same-size groups so no real hashing cost is paid.
+
+    Returns (kept, dropped). Each dropped entry carries a "_drop_reason" and
+    "_superseded_by" for the report — nothing is removed silently.
+    """
+    kept: list[dict] = []
+    dropped: list[dict] = []
+
+    by_cid: dict[str, list[dict]] = defaultdict(list)
+    no_cid: list[dict] = []
+    for e in entries:
+        cid = content_ids.get(e["path"])
+        if cid:
+            by_cid[cid].append(e)
+        else:
+            no_cid.append(e)
+
+    for cid, group in by_cid.items():
+        if len(group) == 1:
+            kept.append(group[0])
+            continue
+
+        stills = [e for e in group if e["media_type"] == "image"]
+        motion = [e for e in group if e["media_type"] != "image"]
+
+        if stills:
+            # Live Photo (and/or AirDropped copies of one): the still wins.
+            winner = max(stills, key=_quality_rank)
+            losers = [e for e in group if e is not winner]
+            reason_for = lambda e: ("live-photo motion file"
+                                    if e["media_type"] != "image"
+                                    else "duplicate copy of the same photo")
+        else:
+            # Only videos share this id — AirDropped copies of one Live Photo
+            # motion file, or of one clip. Keep the best.
+            winner = max(motion, key=_quality_rank)
+            losers = [e for e in group if e is not winner]
+            reason_for = lambda e: "duplicate copy of the same clip"
+
+        kept.append(winner)
+        for e in losers:
+            e["_drop_reason"] = reason_for(e)
+            e["_superseded_by"] = winner["filename"]
+            e["_superseded_by_path"] = winner["path"]
+            e["_content_id"] = cid
+            dropped.append(e)
+
+    # Fallback for files with no ContentIdentifier: exact byte duplicates only.
+    by_size: dict[int, list[dict]] = defaultdict(list)
+    for e in no_cid:
+        by_size[e.get("size_bytes") or -1].append(e)
+
+    for size, group in by_size.items():
+        if len(group) == 1 or size <= 0:
+            kept.extend(group)
+            continue
+        survivors: list[dict] = []
+        for e in group:
+            twin = next((s for s in survivors if _identical_bytes(s["path"], e["path"])), None)
+            if twin is None:
+                survivors.append(e)
+            else:
+                e["_drop_reason"] = "byte-identical duplicate"
+                e["_superseded_by"] = twin["filename"]
+                e["_superseded_by_path"] = twin["path"]
+                dropped.append(e)
+        kept.extend(survivors)
+
+    return kept, dropped
+
+
+# ---------------------------------------------------------------------------
 # Directory scan
 # ---------------------------------------------------------------------------
 
 def scan_directory(input_dir: str, local_offset_min: int | None = None,
-                   output_dir: str | None = None) -> tuple[list[dict], dict]:
+                   output_dir: str | None = None,
+                   keep_duplicates: bool = False) -> tuple[list[dict], dict]:
     """
     Recursively scan input_dir for media files.
 
@@ -678,6 +824,22 @@ def scan_directory(input_dir: str, local_offset_min: int | None = None,
     for i, path in enumerate(found_paths, 1):
         print(f"  [{i}/{total}] Inspecting {os.path.basename(path)} …")
         entries.append(inspect_file(path))
+
+    # ── Live Photos and duplicates ────────────────────────────────────────────
+    # Must happen before anything downstream counts or names files: a Live Photo
+    # is two files for one moment, and an AirDropped photo is the same shot in
+    # two folders. Left in, both land on the timeline twice.
+    dropped: list[dict] = []
+    if not keep_duplicates:
+        content_ids = exiftool_content_identifiers([e["path"] for e in entries])
+        before = len(entries)
+        entries, dropped = dedupe_entries(entries, content_ids)
+        if dropped:
+            live = sum(1 for d in dropped if "live-photo" in d["_drop_reason"])
+            dupes = len(dropped) - live
+            print(f"\n  Collapsed {before} file(s) → {len(entries)}: "
+                  f"{live} Live Photo motion file(s), {dupes} duplicate(s).")
+            print("  (see ingest_report.md for the full list; --keep-duplicates disables this)")
 
     # ── Timezone normalization ────────────────────────────────────────────────
     # Some cameras (Canon Vixia / 7D, iVue Rincon) record naive local wall-clock
@@ -741,6 +903,18 @@ def scan_directory(input_dir: str, local_offset_min: int | None = None,
         "offset_source": offset_source,
         "corrected_files": corrected_files,
         "fallback_used": fallback_used,
+        "dropped": [
+            {
+                "filename": d["filename"],
+                "path": d["path"],
+                "rel_path": os.path.relpath(d["path"], input_dir),
+                "media_type": d["media_type"],
+                "reason": d["_drop_reason"],
+                "superseded_by": d["_superseded_by"],
+                "superseded_by_rel": os.path.relpath(d["_superseded_by_path"], input_dir),
+            }
+            for d in dropped
+        ],
     }
     return entries, tz_summary
 
@@ -933,6 +1107,25 @@ def write_ingest_report(entries: list[dict], input_dir: str, output_dir: str,
     a(f"")
 
     flags_found = False
+
+    dropped = tz_summary.get("dropped") or []
+    if dropped:
+        flags_found = True
+        live = [d for d in dropped if "live-photo" in d["reason"]]
+        dupes = [d for d in dropped if "live-photo" not in d["reason"]]
+        a(f"- **{len(dropped)} file(s) collapsed before the timeline** "
+          f"({len(live)} Live Photo motion file(s), {len(dupes)} duplicate(s))")
+        if live:
+            a(f"  - Live Photos are one moment stored as two files; the still is kept "
+              f"and the motion file dropped so the shot appears once:")
+            for d in live:
+                a(f"    - `{d['rel_path']}` → kept `{d['superseded_by_rel']}`")
+        if dupes:
+            a(f"  - Same shot present more than once (e.g. AirDropped between phones); "
+              f"the highest-quality copy is kept:")
+            for d in dupes:
+                a(f"    - `{d['rel_path']}` → kept `{d['superseded_by_rel']}` ({d['reason']})")
+        a(f"  - Re-run with `--keep-duplicates` to import every file instead.")
 
     corrected = tz_summary.get("corrected_files") or []
     if corrected:
@@ -1228,6 +1421,14 @@ def main():
              "iVue Rincon). Default: read the offset from an iPhone/GoPro clip in the "
              "batch, else fall back to this machine's timezone.",
     )
+    parser.add_argument(
+        "--keep-duplicates",
+        action="store_true",
+        help="Import every file, including Live Photo motion files and duplicate "
+             "copies of the same shot (e.g. AirDropped between phones). By default "
+             "these are collapsed to one clip each so a moment appears once on the "
+             "timeline; every collapsed file is listed in ingest_report.md.",
+    )
     args = parser.parse_args()
 
     # Resolve input directory — prompt if not provided as an argument
@@ -1255,7 +1456,8 @@ def main():
     # Scan
     print("Scanning files …")
     entries, tz_summary = scan_directory(
-        input_dir, local_offset_min=args.local_offset, output_dir=output_dir
+        input_dir, local_offset_min=args.local_offset, output_dir=output_dir,
+        keep_duplicates=args.keep_duplicates,
     )
     print(f"\nFound {len(entries)} media file(s).\n")
 

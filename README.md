@@ -104,7 +104,7 @@ Scans a footage folder recursively, extracts metadata via ffprobe / exiftool, an
 
 - `manifest.json` — machine-readable, consumed by 2-transcode.py
 - `clips_ordered.txt` — human-readable chronological list
-- `ingest_report.md` — counts, flags (HDR / VFR / vertical / missing timestamps / naive-local timestamps normalized to UTC), external-audio + camera-sync pairings, timeline gaps
+- `ingest_report.md` — counts, flags (HDR / VFR / vertical / missing timestamps / naive-local timestamps normalized to UTC / collapsed Live Photos + duplicates), external-audio + camera-sync pairings, timeline gaps
 
 **What it detects per file:** source, camera model, media type, orientation, dimensions, duration, FPS, HDR, VFR, creation timestamp.
 
@@ -113,6 +113,18 @@ Scans a footage folder recursively, extracts metadata via ffprobe / exiftool, an
 **External audio pairing.** After scanning, 1-ingest.py asks whether any video clips have a separate, higher-quality audio file (iPhone Voice Memo, dedicated recorder, etc.). If yes, you drag-and-drop each video clip and its matching audio file. The pairing is written to `manifest.json` as an `external_audio` field — no heavy processing happens at ingest time. The video clip keeps its native audio; in `2-transcode.py` (step 2) the paired file is conformed to a sibling WAV, `audio-offset-finder` measures the offset, and in `3-import-vse.py` (step 3) the conformed audio is dropped onto a separate VSE track aligned with the video.
 
 **Camera-sync pairing.** 1-ingest.py then asks whether any two clips captured the same take from different cameras — e.g. an OBS screen recording (with a good USB mic) plus a Canon 7D angle. You drag-and-drop the **base** clip (its audio anchors the sync, typically OBS) and the **second camera** clip. Both must be scanned project files, and — unlike external audio — **both videos are preserved as separate files**. The pairing is written to `manifest.json` as a shared `sync_group` id with `sync_base` on the base clip. The actual offset measurement happens in `2-transcode.py` (step 2), and 3-import-vse.py (step 3) overlaps the pair on separate Blender tracks.
+
+**Live Photos and duplicates.** A Live Photo is one moment stored as two files
+(`IMG_1234.HEIC` + `IMG_1234.MOV`), and the same shot AirDropped between two phones lands in
+two folders under the same name. Both cases would otherwise put one moment on the timeline
+twice. Ingest collapses them using Apple's `ContentIdentifier` — the UUID that pairs a Live
+Photo's still with its motion file, and that survives AirDrop even though the bytes don't
+(AirDrop re-compresses, so the copies are not byte-identical). Policy: for a Live Photo the
+**still is kept** and the motion file dropped; for duplicates the **highest-quality copy**
+wins (most pixels, then largest file). Files with no `ContentIdentifier` — GoPro, non-Live
+photos, non-Apple gear — fall back to exact-byte comparison within same-size groups, so no
+real hashing cost is paid. Every collapsed file is listed in `ingest_report.md` with what
+superseded it; nothing disappears silently. `--keep-duplicates` imports everything instead.
 
 **Timezone normalization.** iPhone, GoPro, and DJI write `creation_time` in true UTC. Other
 cameras — Canon Vixia, Canon 7D, iVue Rincon — write naive *local* wall-clock time but
@@ -140,12 +152,28 @@ python3 1-ingest.py          # prompted — supports drag-and-drop
 |---|---|
 | `--output`, `-o` | Custom output directory (default: `<input_dir>/_ingest`) |
 | `--local-offset` | UTC offset of the footage's local time, e.g. `-04:00`. Overrides offset detection for naive-local cameras (Canon, iVue). Default: read from an iPhone/GoPro clip, else this machine's timezone. |
+| `--keep-duplicates` | Import every file, including Live Photo motion files and duplicate copies of the same shot. Default: collapse them to one clip each (see above). |
 
 ---
 
 ### `2-transcode.py`
 
 Reads `_ingest/manifest.json` and normalizes every file. All output lands in `_ingest/transcoded/`. Already-transcoded files are skipped, so re-runs are safe.
+
+**Output naming is per source file, not per stem.** Every input gets its own output. Naming
+outputs after the filename stem alone silently loses files — `IMG_1234.HEIC` and
+`IMG_1234.MOV`, or the same filename in two camera folders, all collapse onto `IMG_1234.mp4`,
+and whichever is processed second hits "already exists", is skipped, and leaves a manifest
+entry pointing at a *different* file's video. Ingest now collapses Live Photos and duplicates
+upstream, so this is the backstop for what's left: genuinely different files that share a
+name. Names escalate only as far as needed, each step naming what actually differs —
+`IMG_1234.mp4` → `IMG_1234_heic.mp4` (same folder, different type) → `iphoneEvan__IMG_1234.mp4`
+(same name, two folders) → `…__2.mp4`. Assignment is deterministic, so re-runs reuse prior work.
+
+**"Already exists" means "already built from this file."** A provenance index
+(`_ingest/transcoded/.transcode_index.json`) records which source produced each output, with
+its size and mtime. A skip fires only when the output came from that exact source, unchanged —
+so replacing a source file rebuilds its output instead of silently keeping the stale one.
 
 **What it does per file type:**
 
@@ -275,6 +303,7 @@ project_folder/
 │   ├── ingest_report.md
 │   └── transcoded/
 │       ├── manifest_transcoded.json  ← transcode output
+│       ├── .transcode_index.json     ← which source produced each output (skip provenance)
 │       ├── *.mp4                     ← normalized clips
 │       └── *_extaudio.wav            ← conformed external-audio strips (one per paired clip)
 ├── my_project_1.blend              ← VSE project, from 3-import-vse.py
