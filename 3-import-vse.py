@@ -524,13 +524,73 @@ print("IMPORT_COMPLETE")
 # Run Blender headlessly
 # ---------------------------------------------------------------------------
 
-def run_blender(blender_bin: str, script_path: str, dry_run: bool = False) -> bool:
+def raise_open_file_limit(needed: int) -> tuple[int, int]:
+    """
+    Raise this process's open-file limit so Blender (which inherits it) can hold
+    a file handle per movie strip.
+
+    macOS ships a soft limit of 256. Blender keeps every imported clip open, so
+    a project with more clips than that dies partway through the import with a
+    misleading per-file error — "swscale can't transform…" / "could not be
+    loaded" on whatever clip happened to land in the slot where the descriptors
+    ran out. The file itself is fine; any clip in that position would fail.
+
+    Returns (before, after) soft limits. Best-effort: if the limit cannot be
+    raised we carry on and let the caller warn, since a small project is
+    unaffected.
+    """
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except Exception:
+        return (0, 0)
+
+    if soft >= needed:
+        return (soft, soft)
+
+    # macOS refuses anything above kern.maxfilesperproc even when the hard
+    # limit reads "unlimited", so cap the request to what the kernel allows.
+    ceiling = hard
+    try:
+        out = subprocess.run(["sysctl", "-n", "kern.maxfilesperproc"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        if out.isdigit():
+            ceiling = int(out) if hard in (resource.RLIM_INFINITY, -1) else min(hard, int(out))
+    except Exception:
+        pass
+    if ceiling in (resource.RLIM_INFINITY, -1):
+        ceiling = needed
+
+    target = min(max(needed, soft), ceiling)
+    for attempt in (target, needed, 4096, 1024):
+        if attempt <= soft:
+            break
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (attempt, hard))
+            return (soft, attempt)
+        except (ValueError, OSError):
+            continue
+    return (soft, soft)
+
+
+def run_blender(blender_bin: str, script_path: str, dry_run: bool = False,
+                clip_count: int = 0) -> bool:
     """
     Launch Blender in background mode with the given Python script.
     Streams output live so the user can see progress.
     Returns True if Blender exited cleanly and printed IMPORT_COMPLETE.
     """
     cmd = [blender_bin, "--background", "--python", script_path]
+
+    # Headroom: one handle per clip, plus Blender's own libraries/fonts/caches.
+    needed = clip_count * 2 + 512
+    before, after = raise_open_file_limit(needed)
+    if after > before:
+        say(f"  Raised open-file limit {before} → {after} for {clip_count} clip(s).")
+    elif clip_count and before and before < needed:
+        warn(f"  Open-file limit is {before}, but {clip_count} clips may need ~{needed}. "
+             f"If the import dies partway through with 'could not be loaded', "
+             f"run `ulimit -n {needed}` in this shell and retry.")
 
     if dry_run:
         say(f"  [dry-run] would run: {' '.join(cmd)}")
@@ -784,7 +844,8 @@ def main():
         with os.fdopen(tmp_fd, "w") as f:
             f.write(script_src)
 
-        success = run_blender(blender_bin, tmp_path, args.dry_run)
+        success = run_blender(blender_bin, tmp_path, args.dry_run,
+                              clip_count=len(entries))
     finally:
         try:
             os.unlink(tmp_path)

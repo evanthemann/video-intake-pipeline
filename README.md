@@ -215,6 +215,14 @@ python3 2-transcode.py          # prompted — supports drag-and-drop
 
 Reads `manifest_transcoded.json`, prompts for project name and resolution, then launches Blender headlessly to create a `.blend` file with all clips placed on the VSE timeline in chronological order. Applies the Video Editing workspace layout and writes `blender_import.log`.
 
+**Open-file limit.** Blender keeps a file handle open for every movie strip, and macOS ships a
+soft limit of 256. A project with more clips than that dies partway through the import with a
+misleading per-file error — `swscale can't transform from pixel format yuv420p to rgba` and
+`could not be loaded` on whichever clip happened to land where the descriptors ran out. That
+clip is fine; any clip in that position would fail. The script now raises the limit before
+launching Blender (two handles per clip plus headroom, capped to `kern.maxfilesperproc`), and
+warns with the exact `ulimit -n` to run if it cannot.
+
 **Per-camera channel routing.** Every strip from the same physical camera lands on a shared VSE channel so per-camera mute/solo is one click. The routing key is the entry's `camera_model` (e.g. `Canon EOS 7D`, `Canon VIXIA HF R40`, `iPhone 16 Pro`, `HERO12 Black`, `DJI Mini4 Pro`), falling back to `source` for clips with no exposed model (OBS, anything without EXIF Make/Model) — so a Canon 7D and a Canon VIXIA never collide on one lane even though both report `source: "canon"`. Cameras fill channel pairs from ch1 upward in first-seen chronological order; whichever camera shoots first claims ch1/2. OBS is special-cased to always pin to ch1/2 (the bottom row) if any OBS clip is present, regardless of batch order, so the screen capture sits below the paired camera in a sync pair. External-audio sources (`zoom`, `voice-memo`, or a file-extension bucket — set by `1-ingest.py` from filename pattern + ffprobe handler tag) fill single channels above the highest camera pair. Channels are stable within a project: a second clip from the same camera lands on the same lane as the first, even if other cameras appear in between.
 
 **Synced camera pairs.** A `sync_group` pair is placed as a single chronological slot with the two angles **overlapping on separate tracks**: each clip goes to its own camera's lane (e.g. an OBS+7D pair lands OBS on the OBS lane and 7D on the Canon lane, never colliding because they're different sources). The angle is shifted by the measured `sync_offset_s` so the same moment lines up. Both audio strips are imported active (mix or mute them in Blender). The pair reserves its combined span, after which solo clips resume sequentially.
