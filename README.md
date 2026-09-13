@@ -228,21 +228,15 @@ Reopening the `.blend` does not re-open the decoders, so peak memory tracks batc
 than total clip count. Each batch reports the frame the next one should start on, so the
 timeline stays continuous. Use `--batch-size 0` to force a single process.
 
-Two related details, both load-bearing:
+One detail is load-bearing: a resumed batch is given the `.blend` **on Blender's command
+line**, never via `wm.open_mainfile()` from inside the running script — replacing the open file
+frees the context that script is executing in, which segfaults Blender.
 
-- A resumed batch is given the `.blend` **on Blender's command line**, never via
-  `wm.open_mainfile()` from inside the running script — replacing the open file frees the
-  context that script is executing in, which segfaults Blender.
-- Strips are scaled to fit the scene, preserving aspect ratio
-  (`min(scene_x/src_w, scene_y/src_h)`). `movie_strip_add` did this implicitly via its
-  `fit_method='FIT'` default; `new_movie()` leaves everything at scale 1.0. Transcode only
-  normalizes *vertical* clips to 1920×1080 — landscape clips are stream-copied at native
-  resolution — so a mixed shoot always arrives with several resolutions, and without this a 4K
-  clip in a 1080p project renders at 2×, showing only the centre quarter of frame.
-- A resumed batch skips the UI-context setup (retyping a `SEQUENCE_EDITOR` area, building a
-  `temp_override`, `view_all()`). A `.blend` saved in background mode has a degenerate screen
-  layout, and manipulating it segfaults. None of it is needed for the import itself, since
-  strips are created through the direct RNA API rather than `bpy.ops.sequencer.*_strip_add`.
+Strips are created with `bpy.ops.sequencer.*_strip_add`, whose defaults do real work:
+`fit_method='FIT'` scales each strip to the scene, and `set_view_transform` picks the right
+view transform for the media. Both matter here — transcode only normalizes *vertical* clips to
+1920×1080, so a mixed shoot arrives with several resolutions at once, and graded footage left on
+AgX gets re-tonemapped on render.
 
 **Open-file limit.** Blender also keeps a file handle per strip, and macOS ships a soft limit of
 256 — a secondary constraint that bit at 254 clips before the memory ceiling did. The script

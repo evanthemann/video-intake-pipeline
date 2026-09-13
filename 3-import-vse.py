@@ -397,15 +397,6 @@ scene.render.resolution_y = RESOLUTION_Y
 scene.render.fps          = FPS_INT
 scene.render.fps_base     = FPS_BASE
 
-# Footage is already graded; AgX would re-tonemap it on render. movie_strip_add
-# used to set this implicitly ("View transform set to Standard (converted from
-# AgX)"), but strips are now added through the direct API, which does not — so
-# set it here or renders come out looking washed out.
-try:
-    scene.view_settings.view_transform = "Standard"
-except TypeError:
-    pass
-
 # ── Sequence editor ──────────────────────────────────────────────────────────
 if not scene.sequence_editor:
     scene.sequence_editor_create()
@@ -414,105 +405,69 @@ sequence_editor = scene.sequence_editor
 scene.frame_set(1)
 
 # ── Find or create a SEQUENCE_EDITOR area ───────────────────────────────────
-# Only needed on a fresh file, and only for the cosmetic view_all() below —
-# strips themselves are added through the direct RNA API, which needs no UI
-# context. A resumed batch reopens a .blend that was SAVED in background mode,
-# whose screen layout is degenerate; retyping its areas and building a
-# temp_override on it segfaults Blender outright. So skip all of it on resume.
+# The sequencer operators need a real area/region to run against, on every
+# batch — including resumed ones, which open a .blend saved in background mode.
+# Prefer an existing SEQUENCE_EDITOR area (a resumed file already has one, from
+# the Video Editing workspace appended on batch 1) and only retype an area as a
+# last resort, since mutating the screen of a background-loaded file is the
+# risky part.
 override_ctx = contextlib.nullcontext()
-if not RESUME_EXISTING:
-    try:
-        area_type = "SEQUENCE_EDITOR"
-        areas = [a for a in bpy.context.window.screen.areas if a.type == area_type]
-        if not areas:
-            largest = max(bpy.context.window.screen.areas,
-                          key=lambda a: a.width * a.height)
-            largest.type = area_type
-            areas = [largest]
-        override_ctx = bpy.context.temp_override(
-            window=bpy.context.window,
-            area=areas[0],
-            region=[r for r in areas[0].regions if r.type == "WINDOW"][0],
-            screen=bpy.context.window.screen,
-        )
-    except (AttributeError, IndexError, ValueError) as e:
-        print("Warning: no usable UI context (%s); continuing without it." % e)
+try:
+    area_type = "SEQUENCE_EDITOR"
+    screen = bpy.context.window.screen
+    areas = [a for a in screen.areas if a.type == area_type]
+    if not areas:
+        largest = max(screen.areas, key=lambda a: a.width * a.height)
+        largest.type = area_type
+        areas = [largest]
+    regions = [r for r in areas[0].regions if r.type == "WINDOW"]
+    if not regions:
+        raise ValueError("SEQUENCE_EDITOR area has no WINDOW region")
+    override_ctx = bpy.context.temp_override(
+        window=bpy.context.window,
+        area=areas[0],
+        region=regions[0],
+        screen=screen,
+    )
+except (AttributeError, IndexError, ValueError) as e:
+    print("Warning: no usable UI context (%s); strip operators may fail." % e)
 
 with override_ctx:
-    # Strips are created through the direct RNA API rather than
-    # bpy.ops.sequencer.*_strip_add. The operators accumulate state across calls
-    # and give out partway through a large import — observed on a 360-clip
-    # project, which died at strip 272 with a misleading per-file error
-    # ("swscale can't transform from pixel format yuv420p to rgba" /
-    # "could not be loaded"). The named clip was healthy: it imported fine alone
-    # and fine at position 122 of a 210-clip subset. The same 360 clips all load
-    # through this API. See the README for the full write-up.
+    # Strips are created with bpy.ops.sequencer.*_strip_add, whose defaults do
+    # real work we would otherwise have to reimplement: fit_method='FIT' scales
+    # each strip to the scene (transcode only normalizes VERTICAL clips, so a
+    # mixed shoot arrives with several resolutions), and set_view_transform
+    # picks the right view transform for the media instead of leaving graded
+    # footage to be re-tonemapped through AgX on render.
     #
-    # Layout matches what movie_strip_add produced: SOUND on `channel`, MOVIE on
+    # movie_strip_add places the SOUND strip on `channel` and the MOVIE strip on
     # channel+1, so each clip occupies the pair (channel, channel+1). Base uses
     # channel=1 -> (1,2); angle uses channel=3 -> (3,4); disjoint, no collision.
-
-    def fit_strip(movie):
-        """
-        Scale a strip to fit the scene, preserving aspect ratio.
-
-        bpy.ops.sequencer.movie_strip_add did this implicitly via its
-        fit_method='FIT' default; sequences.new_movie() does not, and leaves
-        every strip at scale 1.0. Without it a 4K clip in a 1080p project
-        renders at 2x — showing only the centre quarter of frame — and a 720p
-        clip sits small in the middle of the canvas.
-
-        Transcode only normalizes *vertical* clips to 1920x1080; landscape
-        clips are stream-copied at native resolution, so a mixed shoot always
-        arrives here with several resolutions. Verified to reproduce the
-        operator exactly: 3840x2160 -> 0.5, 1920x1080 -> 1.0, 1280x720 -> 1.5,
-        1440x1080 -> 1.0.
-        """
-        try:
-            elem = movie.elements[0]
-            src_w, src_h = elem.orig_width, elem.orig_height
-        except (IndexError, AttributeError):
-            return
-        if not src_w or not src_h:
-            return
-        scale = min(RESOLUTION_X / src_w, RESOLUTION_Y / src_h)
-        movie.transform.scale_x = scale
-        movie.transform.scale_y = scale
+    # Returns the active strip (same frame range as its pair).
 
     def add_strip(file_path, frame_start, channel):
-        name = os.path.basename(file_path)
-        movie = sequence_editor.sequences.new_movie(
-            name=name, filepath=file_path,
-            channel=channel + 1, frame_start=int(frame_start))
-        # new_movie() does NOT raise when Blender fails to open the media — it
-        # returns a 1-frame placeholder. Left unchecked that yields a .blend
-        # that looks complete but silently drops clips, which is far worse than
-        # a hard failure. Under memory pressure this is exactly what happens:
-        # once Blender can no longer allocate a decode context, every remaining
-        # strip comes back as a 1-frame stub.
-        if movie.frame_final_duration <= 1:
+        bpy.ops.sequencer.movie_strip_add(
+            filepath=file_path, frame_start=int(frame_start), channel=channel)
+        strip = sequence_editor.active_strip
+        # Belt and braces. The operator raises on most failures, but a strip that
+        # comes back a single frame long means Blender could not actually read
+        # the media — which is what memory exhaustion looks like, and which would
+        # otherwise leave a .blend that appears complete while silently dropping
+        # clips. Batching is what prevents it; this is what catches it.
+        if strip is not None and strip.frame_final_duration <= 1:
             raise RuntimeError(
-                "Blender could not read '%s' (got a %d-frame placeholder). "
-                "This usually means Blender ran out of memory: every movie strip "
-                "holds an open decoder (~35 MB), so large imports exhaust RAM and "
-                "every clip after that point fails. Import in smaller batches "
-                "(--batch-size) or free up memory."
-                % (name, movie.frame_final_duration))
-        fit_strip(movie)
-        try:
-            sequence_editor.sequences.new_sound(
-                name=name + " [audio]", filepath=file_path,
-                channel=channel, frame_start=int(frame_start))
-        except RuntimeError:
-            # Clip carries no audio track (e.g. a still converted to video).
-            pass
-        return movie
+                "Blender could not read '%s' (got a %d-frame strip). "
+                "Every movie strip holds an open decoder (~35 MB), so a large "
+                "import can exhaust RAM and fail from that point on. Lower "
+                "--batch-size or free up memory."
+                % (os.path.basename(file_path), strip.frame_final_duration))
+        return strip
 
     def add_sound_strip(file_path, frame_start, channel):
-        # A single SOUND strip on `channel` (no movie pair).
-        return sequence_editor.sequences.new_sound(
-            name=os.path.basename(file_path), filepath=file_path,
-            channel=channel, frame_start=int(frame_start))
+        # sound_strip_add places a single SOUND strip on `channel` (no movie pair).
+        bpy.ops.sequencer.sound_strip_add(
+            filepath=file_path, frame_start=int(frame_start), channel=channel)
+        return sequence_editor.active_strip
 
     total = len(IMPORT_ITEMS)
     imported = 0
