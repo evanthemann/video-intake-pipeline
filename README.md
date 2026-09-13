@@ -233,6 +233,12 @@ Two related details, both load-bearing:
 - A resumed batch is given the `.blend` **on Blender's command line**, never via
   `wm.open_mainfile()` from inside the running script — replacing the open file frees the
   context that script is executing in, which segfaults Blender.
+- Strips are scaled to fit the scene, preserving aspect ratio
+  (`min(scene_x/src_w, scene_y/src_h)`). `movie_strip_add` did this implicitly via its
+  `fit_method='FIT'` default; `new_movie()` leaves everything at scale 1.0. Transcode only
+  normalizes *vertical* clips to 1920×1080 — landscape clips are stream-copied at native
+  resolution — so a mixed shoot always arrives with several resolutions, and without this a 4K
+  clip in a 1080p project renders at 2×, showing only the centre quarter of frame.
 - A resumed batch skips the UI-context setup (retyping a `SEQUENCE_EDITOR` area, building a
   `temp_override`, `view_all()`). A `.blend` saved in background mode has a degenerate screen
   layout, and manipulating it segfaults. None of it is needed for the import itself, since

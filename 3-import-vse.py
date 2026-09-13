@@ -452,6 +452,33 @@ with override_ctx:
     # channel+1, so each clip occupies the pair (channel, channel+1). Base uses
     # channel=1 -> (1,2); angle uses channel=3 -> (3,4); disjoint, no collision.
 
+    def fit_strip(movie):
+        """
+        Scale a strip to fit the scene, preserving aspect ratio.
+
+        bpy.ops.sequencer.movie_strip_add did this implicitly via its
+        fit_method='FIT' default; sequences.new_movie() does not, and leaves
+        every strip at scale 1.0. Without it a 4K clip in a 1080p project
+        renders at 2x — showing only the centre quarter of frame — and a 720p
+        clip sits small in the middle of the canvas.
+
+        Transcode only normalizes *vertical* clips to 1920x1080; landscape
+        clips are stream-copied at native resolution, so a mixed shoot always
+        arrives here with several resolutions. Verified to reproduce the
+        operator exactly: 3840x2160 -> 0.5, 1920x1080 -> 1.0, 1280x720 -> 1.5,
+        1440x1080 -> 1.0.
+        """
+        try:
+            elem = movie.elements[0]
+            src_w, src_h = elem.orig_width, elem.orig_height
+        except (IndexError, AttributeError):
+            return
+        if not src_w or not src_h:
+            return
+        scale = min(RESOLUTION_X / src_w, RESOLUTION_Y / src_h)
+        movie.transform.scale_x = scale
+        movie.transform.scale_y = scale
+
     def add_strip(file_path, frame_start, channel):
         name = os.path.basename(file_path)
         movie = sequence_editor.sequences.new_movie(
@@ -471,6 +498,7 @@ with override_ctx:
                 "every clip after that point fails. Import in smaller batches "
                 "(--batch-size) or free up memory."
                 % (name, movie.frame_final_duration))
+        fit_strip(movie)
         try:
             sequence_editor.sequences.new_sound(
                 name=name + " [audio]", filepath=file_path,
