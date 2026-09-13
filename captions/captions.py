@@ -367,7 +367,29 @@ def transcribe(
     # hard-break-on-`.?!` heuristic actually fires.
     words: list[tuple[float, float, str]] = []
     for seg in data.get("transcription", []):
-        for tok in seg.get("tokens", []):
+        seg_tokens = seg.get("tokens", [])
+        if not seg_tokens:
+            continue
+
+        # whisper.cpp's VAD path remaps each segment's own offsets back onto
+        # the original (pre-VAD) timeline, but leaves the per-token offsets
+        # inside it relative to the VAD-compacted audio actually decoded —
+        # i.e. with every silent stretch VAD stripped out still missing. That
+        # gap only grows, so by the end of a long file a token's raw offset
+        # can be a hundred-plus seconds behind real time even though the
+        # segment it belongs to is correctly placed. Anchor every token back
+        # to its segment's real start so it inherits the correction. This is
+        # a no-op when VAD is off, since segment and first-token offsets
+        # already agree.
+        seg_offs = seg.get("offsets") or {}
+        try:
+            shift_ms = int(seg_offs.get("from", 0)) - int(
+                (seg_tokens[0].get("offsets") or {}).get("from", 0)
+            )
+        except (TypeError, ValueError):
+            shift_ms = 0
+
+        for tok in seg_tokens:
             raw = tok.get("text") or ""
             if not raw.strip():
                 continue
@@ -375,8 +397,8 @@ def transcribe(
                 continue
             offs = tok.get("offsets") or {}
             try:
-                start_ms = int(offs.get("from", 0))
-                end_ms   = int(offs.get("to", start_ms))
+                start_ms = int(offs.get("from", 0)) + shift_ms
+                end_ms   = int(offs.get("to", offs.get("from", 0))) + shift_ms
             except (TypeError, ValueError):
                 continue
             if end_ms < start_ms:

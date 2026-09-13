@@ -172,6 +172,31 @@ when it isn't.
 Use `--no-vad` only if VAD is dropping speech you need — very quiet or
 heavily-processed dialogue is the case where it can be too aggressive.
 
+## VAD timestamp drift (fixed)
+
+On a long file with VAD enabled, captions used to land right on the beat at
+the start and then fall further and further behind as the file went on — on a
+20-minute test file the last line was misplaced by nearly 3 minutes. Not a
+player bug (reproduced identically in QuickTime and Quick Look) and not a
+video-framerate problem (the rendered MP4's frame timing was checked and was
+solid CFR throughout).
+
+**Root cause:** whisper.cpp's VAD path decodes a copy of the audio with the
+silent stretches spliced out. It correctly remaps each *segment's* timestamps
+back onto the real (pre-VAD) timeline, but the *per-token* offsets inside each
+segment are left relative to that spliced, time-compressed audio. Every
+silence VAD strips out adds to the gap between "token time" and "real time,"
+so the drift is roughly proportional to how much silence has accumulated by
+that point in the file — near-zero at the start, worst by the end. `transcribe()`
+was reading only the per-token offsets, so it inherited the drift directly.
+
+**Fix (already applied, in `transcribe()`):** for each segment, compute
+`shift = segment's own offset − its first token's raw offset`, and add that
+shift to every token in the segment. The segment-level offset is always
+correct, so this re-anchors each token to real time. No-op when VAD is off
+(segment and first-token offsets already agree there), so this is safe to
+leave on unconditionally.
+
 ---
 
 ## Files in this folder
