@@ -446,6 +446,16 @@ def avconvert_hdr_to_sdr(src: str, m4v_out: str, avconvert_bin: str,
     return True
 
 
+# Loudness target, shared by every path that writes audio — video clips and
+# conformed external audio alike. Keeping it in one place is the point: an
+# external track that skips normalization is the one you actually listen to,
+# so a mismatch here is audible in a way a mismatch between camera clips isn't.
+LOUDNORM_I   = -16.0
+LOUDNORM_LRA = 11.0
+LOUDNORM_TP  = -1.5
+LOUDNORM_FILTER = f"loudnorm=I={LOUDNORM_I}:LRA={LOUDNORM_LRA}:TP={LOUDNORM_TP}"
+
+
 def find_audio_offset(video_path: str, audio_path: str) -> tuple[float, float]:
     """
     Run audio-offset-finder to locate video_path's audio within audio_path.
@@ -499,8 +509,42 @@ def compute_sync_offsets(results: list[dict]) -> None:
             warn(f"    low confidence sync (score {score:.1f}) — verify alignment in Blender")
 
 
+def measure_loudness(audio_path: str, ffmpeg_bin: str) -> dict | None:
+    """
+    Analysis pass: run loudnorm in measure-only mode and return its JSON stats.
+
+    Needed for the second pass below. Returns None if ffmpeg fails or prints
+    nothing parseable, in which case the caller falls back to a plain conform.
+    """
+    cmd = [ffmpeg_bin, "-hide_banner", "-i", audio_path,
+           "-af", LOUDNORM_FILTER + ":print_format=json",
+           "-f", "null", "-"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=600)
+    except Exception:
+        return None
+    text = r.stderr.decode(errors="replace")
+    # loudnorm prints its JSON block last; grab the final {...} in the output.
+    start = text.rfind("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return None
+    try:
+        stats = json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+    required = ("input_i", "input_lra", "input_tp", "input_thresh", "target_offset")
+    if not all(k in stats for k in required):
+        return None
+    # A digital-silence track measures as -inf and cannot be normalized.
+    if any(str(stats[k]).lstrip("-").lower().startswith("inf") for k in required):
+        return None
+    return stats
+
+
 def conform_external_audio(video_path: str, audio_path: str, out_wav: str,
-                            ffmpeg_bin: str, ffprobe_bin: str) -> None:
+                            ffmpeg_bin: str, ffprobe_bin: str,
+                            loudnorm: bool = True) -> None:
     """
     Resample/remix an external audio file to match the video's audio stream and
     write the result as PCM WAV at `out_wav`.
@@ -510,6 +554,19 @@ def conform_external_audio(video_path: str, audio_path: str, out_wav: str,
     compensate for, so the track drifts relative to a synced offset. Conforming
     to PCM WAV at the video's native rate/channels eliminates both: no priming
     offset, no playback-time resampling, declared duration matches sample count.
+
+    The audio is also normalized to the same target as every video clip. This
+    track is the one you actually listen to — external audio exists because it
+    is the better microphone, so the camera's own audio gets muted — which makes
+    it the worst possible place to skip normalization: everything you discard
+    would sit at the target and the thing you keep would sit at whatever gain
+    the recorder happened to be set to.
+
+    Normalization is deliberately TWO-PASS with linear=true. Single-pass
+    loudnorm is a dynamic filter: it can move samples, which would undo the
+    sample-exactness this function exists to guarantee, and it typically misses
+    the target by a dB or more anyway. Measuring first lets the second pass
+    apply one constant gain — audibly correct and provably alignment-safe.
     """
     probe = subprocess.run(
         [ffprobe_bin, "-v", "error", "-select_streams", "a:0",
@@ -528,8 +585,27 @@ def conform_external_audio(video_path: str, audio_path: str, out_wav: str,
 
     say(f"    video audio: {codec} {sample_rate} Hz {channels} ch — conforming external file")
 
+    af = []
+    if loudnorm:
+        stats = measure_loudness(audio_path, ffmpeg_bin)
+        if stats:
+            af = ["-af", (
+                f"{LOUDNORM_FILTER}"
+                f":measured_I={stats['input_i']}"
+                f":measured_LRA={stats['input_lra']}"
+                f":measured_TP={stats['input_tp']}"
+                f":measured_thresh={stats['input_thresh']}"
+                f":offset={stats['target_offset']}"
+                f":linear=true"
+            )]
+            say(f"    loudness: {stats['input_i']} LUFS → {LOUDNORM_I} LUFS (constant gain)")
+        else:
+            # Silent or unmeasurable: normalizing would either do nothing or
+            # amplify a noise floor. Conform without touching the level.
+            warn("    could not measure loudness — conforming without normalization")
+
     cmd = [ffmpeg_bin, "-y", "-i", audio_path,
-           "-ar", sample_rate, "-ac", channels, out_wav]
+           "-ar", sample_rate, "-ac", channels] + af + [out_wav]
     result = subprocess.run(cmd, capture_output=True, timeout=600)
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace")
@@ -537,7 +613,8 @@ def conform_external_audio(video_path: str, audio_path: str, out_wav: str,
 
 
 def compute_external_audio_offsets(results: list[dict], output_dir: str,
-                                    ffmpeg_bin: str, ffprobe_bin: str) -> None:
+                                    ffmpeg_bin: str, ffprobe_bin: str,
+                                    loudnorm: bool = True) -> None:
     """
     For each clip paired with an external audio file at ingest, conform the
     audio to a sibling WAV next to the transcoded MP4, measure the offset
@@ -570,7 +647,8 @@ def compute_external_audio_offsets(results: list[dict], output_dir: str,
                 continue
             try:
                 conform_external_audio(video_path, src_audio, wav_path,
-                                        ffmpeg_bin, ffprobe_bin)
+                                        ffmpeg_bin, ffprobe_bin,
+                                        loudnorm=loudnorm)
             except Exception as e:
                 warn(f"    audio conform failed: {e} — skipping pair")
                 continue
@@ -672,7 +750,6 @@ def transcode_video(entry: dict, dst: str, ffmpeg_bin: str, avconvert_bin: str,
 
     cmd = [ffmpeg_bin, "-y", "-i", ffmpeg_src]
 
-    LOUDNORM_FILTER = "loudnorm=I=-16:LRA=11:TP=-1.5"
     audio_args = ["-c:a", "aac", "-b:a", "192k"]
     if loudnorm:
         audio_args += ["-af", LOUDNORM_FILTER]
@@ -839,7 +916,8 @@ def main():
     parser.add_argument(
         "--no-loudnorm",
         action="store_true",
-        help="Skip loudnorm audio normalization (default: enabled, -16 LUFS / -1.5 dBTP).",
+        help="Skip loudnorm audio normalization (default: enabled, -16 LUFS / -1.5 dBTP). "
+             "Applies to video clips and to conformed external audio alike.",
     )
     args = parser.parse_args()
 
@@ -1011,7 +1089,8 @@ def main():
 
     # ── Conform + measure external-audio offsets (paired audio as separate WAV) ──
     if not args.dry_run and results:
-        compute_external_audio_offsets(results, output_dir, ffmpeg_bin, ffprobe_bin)
+        compute_external_audio_offsets(results, output_dir, ffmpeg_bin, ffprobe_bin,
+                                       loudnorm=not args.no_loudnorm)
 
     # ── Write updated manifest ───────────────────────────────────────────────
     if not args.dry_run and results:
