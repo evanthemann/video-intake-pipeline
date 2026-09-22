@@ -165,8 +165,11 @@ if TARGET_HEIGHT and TARGET_HEIGHT < scene.render.resolution_y:
 else:
     RES_PERCENT = 100
 scene.render.resolution_percentage = RES_PERCENT
-out_x = int(scene.render.resolution_x * RES_PERCENT / 100)
-out_y = int(scene.render.resolution_y * RES_PERCENT / 100)
+# Rounded down to even here, to match the guard the ffmpeg mux applies for
+# yuv420p — otherwise the reported size and the real one disagree by a pixel
+# (2160 * 22% = 475, which ships as 474).
+out_x = int(scene.render.resolution_x * RES_PERCENT / 100) // 2 * 2
+out_y = int(scene.render.resolution_y * RES_PERCENT / 100) // 2 * 2
 
 print()
 print("=" * 60)
