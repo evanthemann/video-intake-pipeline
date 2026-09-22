@@ -448,6 +448,11 @@ def main():
     if args.dry_run:
         say(f"\n[dry-run] would render: {blend_file}")
         say(f"[dry-run] would write : {out_path}")
+        if args.review:
+            say(f"[dry-run] would write : {os.path.splitext(out_path)[0]}.json"
+                f"  (frame map)")
+            say(f"[dry-run] review preset: height {args.review_height}, "
+                f"JPEG q{args.review_quality}, crf {crf}, preset {preset}")
         sys.exit(0)
 
     # ── Render PNG sequence + audio mixdown ──────────────────────────────────
