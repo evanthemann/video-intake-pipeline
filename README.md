@@ -277,7 +277,8 @@ Renders your final cut `.blend` to a delivery-ready MP4 — outside Blender's bu
 
 ```bash
 python3 4-render-export.py /path/to/project.blend
-python3 4-render-export.py                            # prompted — supports drag-and-drop
+python3 4-render-export.py                            # prompted — asks final vs review,
+                                                       # then drag-and-drop the .blend
 python3 4-render-export.py project.blend --handoff     # keyframe interval 1, for a
                                                        # scrub-friendly handoff to
                                                        # captions/ or after-effects/
@@ -287,6 +288,8 @@ python3 4-render-export.py project.blend --review      # small 480p review proxy
                                                        # whole timeline + a JSON frame
                                                        # map, for the marker round
 ```
+
+Run bare, it asks which kind of render you want before prompting for the file; passing a path or `--review` skips that question, so scripted runs never block.
 
 **`--review`** renders a phone-friendly proxy instead of a delivery copy: JPEG intermediate frames, `--review-height` (default 480) applied via `resolution_percentage` so composition is untouched, CRF 28 / `veryfast` / `-g 30`, 96k audio. It writes two files — `<stem>_review.mp4` and `<stem>_review.json`, the frame map that turns a position in the proxy back into a Blender scene frame (`frame = round(seconds × fps_num ÷ fps_den) + frame_start`). Copy both to the machine running [cuts](https://github.com/evanthemann/cuts), place the F/u pairs on your phone, and bring the resulting markers JSON back. See the Roadmap entry for the round-trip.
 

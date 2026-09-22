@@ -65,6 +65,26 @@ def sanitize_path(raw: str) -> str:
     return p.strip()
 
 
+def prompt_for_mode() -> bool:
+    """Asks what's being rendered. Returns True for a review proxy.
+
+    Only reached when nothing on the command line said either way — a passed
+    path or an explicit --review skips it, so scripted runs never block.
+    """
+    print()
+    print("  What are you rendering?")
+    print("    1) Final MP4    — full quality, for delivery")
+    print("    2) Review proxy — small 480p + frame map, for the marker round")
+    while True:
+        print("  > ", end="", flush=True)
+        choice = input().strip()
+        if choice in ("1", ""):
+            return False
+        if choice == "2":
+            return True
+        warn("Enter 1 or 2.")
+
+
 def prompt_for_blend() -> str:
     print()
     print("  Drag-and-drop your .blend file here, or paste/type the path:")
@@ -415,6 +435,13 @@ def main():
                          help="Show what would run without rendering anything")
     args = parser.parse_args()
 
+    # ── Mode ─────────────────────────────────────────────────────────────────
+    # Bare, interactive run: nothing has said what kind of render this is, so
+    # ask rather than silently defaulting to a full-quality delivery render.
+    review = args.review
+    if not args.blend_file and not args.review and sys.stdin.isatty():
+        review = prompt_for_mode()
+
     # ── Resolve .blend path ──────────────────────────────────────────────────
     if args.blend_file:
         blend_file = sanitize_path(args.blend_file)
@@ -430,14 +457,14 @@ def main():
 
     # --review is a preset, not a separate pipeline step: same render path,
     # different dials. Explicit --crf / --preset still win over the preset.
-    crf = args.crf if args.crf is not None else (28 if args.review else 18)
-    preset = args.preset or ("veryfast" if args.review else "slow")
-    image_format = "JPEG" if args.review else "PNG"
-    frame_ext = "jpg" if args.review else "png"
-    target_height = args.review_height if args.review else 0
-    gop = 30 if args.review else None
-    audio_bitrate = "96k" if args.review else "192k"
-    suffix = "_review.mp4" if args.review else ".mp4"
+    crf = args.crf if args.crf is not None else (28 if review else 18)
+    preset = args.preset or ("veryfast" if review else "slow")
+    image_format = "JPEG" if review else "PNG"
+    frame_ext = "jpg" if review else "png"
+    target_height = args.review_height if review else 0
+    gop = 30 if review else None
+    audio_bitrate = "96k" if review else "192k"
+    suffix = "_review.mp4" if review else ".mp4"
 
     out_path = args.output or (os.path.splitext(blend_file)[0] + suffix)
     out_path = os.path.abspath(os.path.expanduser(out_path))
@@ -451,7 +478,7 @@ def main():
     if args.dry_run:
         say(f"\n[dry-run] would render: {blend_file}")
         say(f"[dry-run] would write : {out_path}")
-        if args.review:
+        if review:
             say(f"[dry-run] would write : {os.path.splitext(out_path)[0]}.json"
                 f"  (frame map)")
             say(f"[dry-run] review preset: height {args.review_height}, "
@@ -495,7 +522,7 @@ def main():
     header("Done")
     ok(f"Exported: {out_path}\n")
 
-    if args.review:
+    if review:
         json_path = write_review_sidecar(out_path, blend_file, meta)
         ok(f"Frame map: {json_path}\n")
         size_mb = os.path.getsize(out_path) / (1024 * 1024)
